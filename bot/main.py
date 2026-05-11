@@ -60,7 +60,7 @@ class DiscordLLMBot:
         intents.message_content = True
         intents.messages = True
         intents.guilds = True
-        intents.direct_messages = True
+        intents.dm_messages = True
 
         self.bot = commands.Bot(
             command_prefix=self.config.command_prefix,
