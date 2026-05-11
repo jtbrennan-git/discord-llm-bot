@@ -118,8 +118,7 @@ class LLMClient:
                     max_tokens=self.config.max_tokens,
                 )
                 if not response or not response.choices:
-                    logger.warning(f"Empty response from {model}: {response}")
-                    raise openai.APIError("API returned empty response")
+                    raise openai.APIError(f"Empty response from {model}")
                 return response.choices[0].message.content or ""
             except openai.RateLimitError as e:
                 last_error = e
