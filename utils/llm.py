@@ -58,7 +58,7 @@ Don't announce which register you're in. Just be in it.
 @dataclass
 class LLMConfig:
     """Configuration for LLM client."""
-    model: str = "minimax/minimax-m2.5:free"
+    model: str = "openrouter/owl-alpha"
     vision_model: str = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
     image_model: str = "recraft/recraft-v4-pro"
     api_key: Optional[str] = None
