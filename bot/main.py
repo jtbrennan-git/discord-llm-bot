@@ -74,6 +74,7 @@ class DiscordLLMBot:
         self.recv_message_counts: Dict[str, int] = {}
         self.bot_message_map: Dict[int, str] = {}
         self._learning_counter: int = 0
+        self.last_action_time: Dict[str, float] = {}  # channel_id -> last action timestamp
 
     async def setup(self):
         """Initialize bot, LLM client, and memory."""
@@ -327,7 +328,8 @@ class DiscordLLMBot:
         await self._generate_and_execute(message, content, for_spontaneous=False)
 
     async def _maybe_join_conversation(self, message: discord.Message):
-        """Spontaneous join with counter-based probability + bandwagon."""
+        """Spontaneous join with counter-based probability + time decay."""
+        import time
         channel_id = str(message.channel.id)
 
         if self.recv_message_counts.get(channel_id, 999) < 15:
@@ -339,6 +341,15 @@ class DiscordLLMBot:
         self.message_counters[channel_id] = counter
         scale = self.MESSAGE_TARGET * 1.5
         chance = min(0.8, counter / scale)
+
+        # Time-based modifier: +0% (just acted) → +20% (been quiet 10+ minutes)
+        now = time.time()
+        last = self.last_action_time.get(channel_id, now)
+        idle_seconds = now - last
+        # Linear ramp: 0% at 0s, +20% at 600s (10 min), cap at 20%
+        time_modifier = min(0.20, (idle_seconds / 600.0) * 0.20)
+        chance = min(0.90, chance + time_modifier)
+
         if random.random() > chance:
             return
 
@@ -392,9 +403,11 @@ class DiscordLLMBot:
         return self.bot.user.display_name if self.bot and self.bot.user else "bot"
 
     def _reset_channel_counters(self, channel_id: str):
+        import time
         self.message_counters[channel_id] = 0
         self.recv_message_counts[channel_id] = 0
         self.conversation_threads.setdefault(channel_id, {"depth": 0})["depth"] += 1
+        self.last_action_time[channel_id] = time.time()
 
     async def _send_tracked(self, channel, content: str, **kwargs) -> discord.Message:
         sent = await channel.send(content, **kwargs)
