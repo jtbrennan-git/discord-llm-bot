@@ -15,7 +15,7 @@ from discord.ext import commands
 
 from config.config import BotConfig
 from utils.llm import LLMClient, LLMConfig
-from utils.helpers import format_response
+from utils.llm import format_response
 
 # Setup logging
 logging.basicConfig(
