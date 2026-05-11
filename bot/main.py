@@ -532,10 +532,13 @@ class DiscordLLMBot:
         logger.debug(f"Feedback: {emoji} on message {mid}")
 
     def run(self):
-        if not self.setup_complete:
-            asyncio.run(self.setup())
+        # Start health server FIRST so Fly smoke checks pass during setup
         port = int(os.getenv("PORT", "8080"))
         start_health_server(port)
+
+        if not self.setup_complete:
+            asyncio.run(self.setup())
+
         try:
             self.bot.run(self.config.discord_token)
         except discord.errors.LoginFailure:
