@@ -16,8 +16,9 @@ class BotConfig:
         self.allow_dms: bool = os.getenv("ALLOW_DMS", "true").lower() == "true"
 
         # LLM settings
-        self.llm_model: str = os.getenv("LLM_MODEL", "gpt-3.5-turbo")
+        self.llm_model: str = os.getenv("LLM_MODEL", "owl-alpha")
         self.llm_api_key: Optional[str] = os.getenv("LLM_API_KEY", None)
+        self.llm_base_url: Optional[str] = os.getenv("LLM_BASE_URL", None)
         self.temperature: float = float(os.getenv("TEMPERATURE", "0.7"))
         self.max_tokens: int = int(os.getenv("MAX_TOKENS", "512"))
 

@@ -16,10 +16,11 @@ logger = logging.getLogger(__name__)
 @dataclass
 class LLMConfig:
     """Configuration for LLM client."""
-    model: str = "gpt-3.5-turbo"
+    model: str = "owl-alpha"
     api_key: Optional[str] = None
+    base_url: Optional[str] = None
     temperature: float = 0.7
-    max_tokens: int = 2048
+    max_tokens: int = 512
     top_p: Optional[float] = None
     frequency_penalty: Optional[float] = None
     presence_penalty: Optional[float] = None
@@ -28,10 +29,10 @@ class LLMConfig:
 class LLMClient:
     """Client for interacting with language models."""
 
-    def __init__(self, config: LLMConfig):
+    def __init__(self, config: LLMConfig, base_url: Optional[str] = None):
         self.config = config
-        api_key = config.api_key or os.getenv("OPENAI_API_KEY", "")
-        base_url = os.getenv("LLM_BASE_URL", None)
+        api_key = config.api_key or os.getenv("LLM_API_KEY", "")
+        base_url = base_url or os.getenv("LLM_BASE_URL", None)
         if base_url:
             self._client = openai.OpenAI(api_key=api_key or "dummy", base_url=base_url)
         elif api_key:

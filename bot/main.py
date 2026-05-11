@@ -76,7 +76,7 @@ class DiscordLLMBot:
             temperature=self.config.temperature,
             max_tokens=self.config.max_tokens,
         )
-        self.llm_client = LLMClient(llm_config)
+        self.llm_client = LLMClient(llm_config, base_url=self.config.llm_base_url)
 
         # Register event handlers
         self.bot.event(self.on_ready)
