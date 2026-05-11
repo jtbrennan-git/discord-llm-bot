@@ -30,16 +30,20 @@ class LLMClient:
 
     def __init__(self, config: LLMConfig):
         self.config = config
-
-        if config.api_key:
-            self._client = openai.OpenAI(api_key=config.api_key)
+        api_key = config.api_key or os.getenv("OPENAI_API_KEY", "")
+        base_url = os.getenv("LLM_BASE_URL", None)
+        if base_url:
+            self._client = openai.OpenAI(api_key=api_key or "dummy", base_url=base_url)
+        elif api_key:
+            self._client = openai.OpenAI(api_key=api_key)
         else:
-            # Try without key (for Ollama or local endpoints)
-            base_url = os.getenv("LLM_BASE_URL", None)
-            self._client = openai.OpenAI(api_key="dummy", base_url=base_url) if base_url else openai.OpenAI()
+            self._client = None
+            logger.warning("No LLM API key configured. LLM features will be disabled.")
 
     async def generate(self, prompt: str, chat_context: Optional[List[str]] = None) -> str:
         """Generate a response from the LLM."""
+        if self._client is None:
+            return "LLM is not configured. Set LLM_API_KEY or LLM_BASE_URL environment variable."
         messages = self._build_messages(prompt, chat_context)
 
         try:
