@@ -19,7 +19,7 @@ class BotConfig:
         self.llm_model: str = os.getenv("LLM_MODEL", "owl-alpha")
         self.llm_api_key: Optional[str] = os.getenv("LLM_API_KEY", None)
         self.llm_base_url: Optional[str] = os.getenv("LLM_BASE_URL", None)
-        self.temperature: float = float(os.getenv("TEMPERATURE", "0.7"))
+        self.temperature: float = float(os.getenv("TEMPERATURE", "0.8"))
         self.max_tokens: int = int(os.getenv("MAX_TOKENS", "512"))
 
         # Validate
