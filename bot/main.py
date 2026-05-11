@@ -49,8 +49,8 @@ class DiscordLLMBot:
     """Main bot class that handles Discord integration and LLM interactions."""
 
     # Probability of considering a spontaneous reply when the counter triggers
-    TRIGGER_CHANCE = 0.4  # 40% chance when counter hits threshold
-    MESSAGE_THRESHOLD = 50  # messages between trigger checks
+    TRIGGER_CHANCE = 0.65  # 65% chance when counter hits threshold
+    MESSAGE_THRESHOLD = 30  # messages between trigger checks
 
     def __init__(self, config: BotConfig):
         self.config = config
@@ -218,8 +218,17 @@ class DiscordLLMBot:
         if not context:
             return
 
+        # Get existing reactions on the latest message to avoid duplicates
+        existing_reactions = []
+        try:
+            # Re-fetch the message to get current reactions
+            fresh_msg = await message.channel.fetch_message(message.id)
+            existing_reactions = [str(r.emoji) for r in fresh_msg.reactions]
+        except Exception:
+            pass
+
         # Meta-prompt: should the bot join this conversation?
-        meta_prompt = self._build_meta_prompt(context)
+        meta_prompt = self._build_meta_prompt(context, existing_reactions=existing_reactions)
 
         try:
             async with message.channel.typing():
@@ -235,9 +244,21 @@ class DiscordLLMBot:
             if decision_lower.startswith("silent"):
                 return  # Bot decided to stay quiet
             elif decision_lower.startswith("react"):
-                # Emoji react only — witty comment as a reaction
-                emoji = self._extract_reaction(decision)
-                await message.add_reaction(emoji)
+                # Emoji react — supports both standard emoji and custom :name: format
+                emoji_str = self._extract_reaction(decision)
+                try:
+                    await message.add_reaction(emoji_str)
+                except discord.HTTPException:
+                    # If custom emoji failed, try to find it in the guild
+                    if emoji_str.startswith(":") and emoji_str.endswith(":"):
+                        emoji_name = emoji_str.strip(":")
+                        guild_emoji = discord.utils.get(message.guild.emojis, name=emoji_name)
+                        if guild_emoji:
+                            await message.add_reaction(guild_emoji)
+                        else:
+                            await message.add_reaction("💀")  # fallback
+                    else:
+                        await message.add_reaction("💀")  # fallback
                 self.recv_message_counts[channel_id] = 0
                 if channel_id not in self.conversation_threads:
                     self.conversation_threads[channel_id] = {"depth": 0}
@@ -263,40 +284,51 @@ class DiscordLLMBot:
         except Exception as e:
             logger.error(f"Error in spontaneous conversation: {e}")
 
-    def _build_meta_prompt(self, context: List[Dict[str, str]]) -> str:
-        """Build a meta-prompt asking the bot whether to join the conversation."""
+    def _build_meta_prompt(self, context: List[Dict[str, str]],
+                           existing_reactions: Optional[List[str]] = None) -> str:
+        """Build a meta-prompt asking the bot whether to join the conversation.
+        Includes existing reactions so the bot doesn't pile on the same one."""
         convo = "\n".join([m["content"] for m in context])
+        reaction_info = ""
+        if existing_reactions:
+            reaction_info = f"\nExisting reactions on the latest message: {', '.join(existing_reactions)}\n"
+
         lines = [
             "Here's the recent human conversation in a Discord channel (your own messages are excluded):",
             "",
             convo,
             "",
             "You're a sarcastic, funny Discord bot deciding whether to chime in.",
-            "",
+            reaction_info,
             "Rules:",
             "1. If this conversation is already resolved or someone already answered the question, stay SILENT.",
             "2. If you'd just be repeating what someone already said, stay SILENT.",
             "3. If the topic is boring/small-talk and you have nothing funny to add, stay SILENT.",
             "4. You are NOT a helpful assistant. Don't offer to help unless it's funny.",
-            "5. Default to SILENT. Only join if you have something genuinely witty.",
             "",
             "Respond with ONE line:",
-            "- 'SILENT: brief reason' — almost always this one",
-            "- 'REACT: emoji' — if a perfect emoji reaction sums it up (e.g. 'REACT: 💀', 'REACT: 🔥')",
-            "- 'REPLY: your exact message' — max 2 sentences, punchy, no preamble, no sign-off",
-            "",
-            "Decision:",
+            "- 'SILENT: brief reason' — only if you truly have nothing",
+            "- 'REACT: emoji' — a funny emoji reaction (default to this over SILENT when in doubt). "
+            "Use custom emoji names like :pepega: or standard emoji like 💀 🔥 👀 😬 🤡 💅 🗿 🧢 👀 🫠 🤌 🥂 🚬 🧠 🤡",
+            "- 'REPLY: your exact message' — max 2 sentences, only if genuinely witty/funny",
         ]
         return "\n".join(lines)
 
     def _extract_reaction(self, decision: str) -> str:
-        """Extract emoji from a REACT decision."""
+        """Extract emoji from a REACT decision.
+        Handles both standard emoji (💀) and custom Discord emoji (:pepega:)."""
         try:
             after = decision.split(":", 1)[1].strip()
-            # Return the first emoji-like thing
+            # Check if it's a custom emoji :name: format
+            if after.startswith(":") and after.endswith(":"):
+                return after  # custom emoji like :pepega:
+            # Otherwise find the first standard emoji
             for char in after:
-                if ord(char) > 1000:  # crude emoji check
+                if ord(char) > 1000:
                     return char
+            # Fallback: return the whole thing (might be :name: without trailing colon)
+            if after.startswith(":"):
+                return f"{after}:" if not after.endswith(":") else after
         except (IndexError, ValueError):
             pass
         return "💀"  # default
