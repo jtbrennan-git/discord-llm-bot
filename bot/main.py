@@ -89,7 +89,7 @@ class DiscordLLMBot:
         self.bot.event(self.on_guild_join)
 
         # Load commands
-        self.bot.add_cog(MainCommands(self.bot, self.llm_client, self.memory))
+        await self.bot.add_cog(MainCommands(self.bot, self.llm_client, self.memory))
 
         self.setup_complete = True
         logger.info("Bot setup complete")
