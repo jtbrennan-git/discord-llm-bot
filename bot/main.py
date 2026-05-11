@@ -8,6 +8,7 @@ import sys
 import logging
 import asyncio
 import threading
+import random
 from typing import Optional, Dict, List
 
 import discord
@@ -47,12 +48,19 @@ def start_health_server(port: int = 8080):
 class DiscordLLMBot:
     """Main bot class that handles Discord integration and LLM interactions."""
 
+    # Probability of considering a spontaneous reply when the counter triggers
+    TRIGGER_CHANCE = 0.4  # 40% chance when counter hits threshold
+    MESSAGE_THRESHOLD = 50  # messages between trigger checks
+
     def __init__(self, config: BotConfig):
         self.config = config
         self.bot: Optional[commands.Bot] = None
         self.llm_client: Optional[LLMClient] = None
         self.memory: Optional[MemoryStore] = None
         self.setup_complete = False
+        self.message_counters: Dict[str, int] = {}  # channel_id -> count
+        self.conversation_threads: Dict[str, dict] = {}  # channel_id -> {active, message_count, depth}
+        self.recv_message_counts: Dict[str, int] = {}  # channel_id -> messages since bot last spoke
 
     async def setup(self):
         """Initialize bot, LLM client, and memory."""
@@ -107,29 +115,187 @@ class DiscordLLMBot:
         if isinstance(message.channel, discord.DMChannel) and not self.config.allow_dms:
             return
 
+        channel_id = str(message.channel.id)
+
         # Store message in memory
         if self.memory:
             self.memory.add_message(
-                channel_id=str(message.channel.id),
+                channel_id=channel_id,
                 guild_id=str(message.guild.id) if message.guild else None,
                 author_name=message.author.display_name,
                 author_id=str(message.author.id),
                 content=message.content,
             )
 
-        # Process commands first
+        # Track messages since bot last spoke in this channel
+        if channel_id not in self.recv_message_counts:
+            self.recv_message_counts[channel_id] = 0
+
+        # Check if someone is replying to the bot (mention or reply)
+        is_reply_to_bot = (
+            self.bot.user in message.mentions or
+            (message.reference and message.reference.message_id and
+             await self._is_bot_message(message.channel, message.reference.message_id))
+        )
+
+        # If someone replied to the bot, continue the conversation thread
+        if is_reply_to_bot and channel_id in self.recv_message_counts:
+            self.recv_message_counts[channel_id] = 0
+            if channel_id not in self.conversation_threads:
+                self.conversation_threads[channel_id] = {"depth": 0}
+            self.conversation_threads[channel_id]["depth"] += 1
+            await self._handle_mention(message, message.content, is_conversation=True)
+            return
+
+        # Process commands
         await self.bot.process_commands(message)
 
-        # Check if bot is mentioned
+        # Handle direct mentions
         if self.bot.user in message.mentions:
             content = message.content
             for mention in message.mentions:
                 content = content.replace(mention.mention, mention.name)
-            await self._handle_mention(message, content)
+            self.recv_message_counts[channel_id] = 0
+            if channel_id not in self.conversation_threads:
+                self.conversation_threads[channel_id] = {"depth": 0}
+            self.conversation_threads[channel_id]["depth"] += 1
+            await self._handle_mention(message, content, is_conversation=True)
+            return
 
-        # Handle direct messages
-        elif isinstance(message.channel, discord.DMChannel):
+        # Handle DMs
+        if isinstance(message.channel, discord.DMChannel):
             await self._handle_dm(message)
+            return
+
+        # Increment message counter for spontaneous conversation check
+        self.message_counters[channel_id] = self.message_counters.get(channel_id, 0) + 1
+        self.recv_message_counts[channel_id] = self.recv_message_counts.get(channel_id, 0) + 1
+
+        # Decay conversation thread depth over time
+        if channel_id in self.conversation_threads:
+            thread = self.conversation_threads[channel_id]
+            if self.recv_message_counts[channel_id] > 10:
+                thread["depth"] = max(0, thread["depth"] - 1)
+
+        # Spontaneous conversation check
+        await self._maybe_join_conversation(message)
+
+    async def _is_bot_message(self, channel, message_id: int) -> bool:
+        """Check if a message was sent by the bot."""
+        try:
+            msg = await channel.fetch_message(message_id)
+            return msg.author.id == self.bot.user.id
+        except Exception:
+            return False
+
+    async def _maybe_join_conversation(self, message: discord.Message):
+        """Randomly decide whether to join a conversation."""
+        channel_id = str(message.channel.id)
+        count = self.message_counters.get(channel_id, 0)
+
+        # Only check every N messages
+        if count < self.MESSAGE_THRESHOLD:
+            return
+
+        # Reset counter
+        self.message_counters[channel_id] = 0
+
+        # Random chance to even consider joining
+        if random.random() > self.TRIGGER_CHANCE:
+            return
+
+        # Don't join if we just spoke recently
+        if self.recv_message_counts.get(channel_id, 999) < 15:
+            return
+
+        # Don't join if conversation thread is already deep
+        thread_depth = self.conversation_threads.get(channel_id, {}).get("depth", 0)
+        if thread_depth >= 3:
+            return
+
+        # Get recent context and ask the LLM if it's worth joining
+        context = self._build_context(channel_id)
+        if not context:
+            return
+
+        # Meta-prompt: should the bot join this conversation?
+        meta_prompt = self._build_meta_prompt(context)
+
+        try:
+            async with message.channel.typing():
+                decision = await self.llm_client.generate(
+                    meta_prompt,
+                    system_prompt=DEFAULT_SYSTEM_PROMPT,
+                    chat_context=[],
+                )
+
+            # Parse the decision
+            decision_lower = decision.strip().lower()
+
+            if decision_lower.startswith("silent"):
+                return  # Bot decided to stay quiet
+            elif decision_lower.startswith("react"):
+                # Emoji react only — witty comment as a reaction
+                emoji = self._extract_reaction(decision)
+                await message.add_reaction(emoji)
+                self.recv_message_counts[channel_id] = 0
+                if channel_id not in self.conversation_threads:
+                    self.conversation_threads[channel_id] = {"depth": 0}
+                self.conversation_threads[channel_id]["depth"] += 1
+            elif decision_lower.startswith("reply"):
+                # Full response
+                response = self._extract_reply(decision)
+                if response:
+                    sent = await message.channel.send(response, reference=message)
+                    self.recv_message_counts[channel_id] = 0
+                    if channel_id not in self.conversation_threads:
+                        self.conversation_threads[channel_id] = {"depth": 0}
+                    self.conversation_threads[channel_id]["depth"] += 1
+                    # Store bot's own message in memory
+                    if self.memory:
+                        self.memory.add_message(
+                            channel_id=channel_id,
+                            guild_id=str(message.guild.id) if message.guild else None,
+                            author_name="fellasbot",
+                            author_id=str(self.bot.user.id),
+                            content=response,
+                        )
+        except Exception as e:
+            logger.error(f"Error in spontaneous conversation: {e}")
+
+    def _build_meta_prompt(self, context: List[Dict[str, str]]) -> str:
+        """Build a meta-prompt asking the bot whether to join the conversation."""
+        convo = "\n".join([f"{m['content']}" for m in context])
+        return (
+            f"Here's the recent conversation in a Discord channel:\n\n{convo}\n\n"
+            f"You're a sarcastic, funny Discord bot. Should you join this conversation?\n\n"
+            f"Respond with ONE of:\n"
+            f"- 'SILENT: reason' if you have nothing worth saying (default to this)\n"
+            f"- 'REACT: emoji' if a funny emoji reaction is enough (e.g. 'REACT: 💀')\n"
+            f"- 'REPLY: your message' if you have something genuinely funny/interesting to add\n\n"
+            f"Be restrained. Only REPLY if you have something genuinely good. "
+            f"Prefer SILENT or REACT. Keep replies short and punchy.\n\n"
+            f"Decision:"
+        )
+
+    def _extract_reaction(self, decision: str) -> str:
+        """Extract emoji from a REACT decision."""
+        try:
+            after = decision.split(":", 1)[1].strip()
+            # Return the first emoji-like thing
+            for char in after:
+                if ord(char) > 1000:  # crude emoji check
+                    return char
+        except (IndexError, ValueError):
+            pass
+        return "💀"  # default
+
+    def _extract_reply(self, decision: str) -> str:
+        """Extract the reply text from a REPLY decision."""
+        try:
+            return decision.split(":", 1)[1].strip()
+        except (IndexError, ValueError):
+            return ""
 
     async def on_guild_join(self, guild: discord.Guild):
         """Called when bot joins a new guild."""
@@ -145,18 +311,32 @@ class DiscordLLMBot:
             context.append({"role": "user", "content": f"{author_name}: {content}"})
         return context
 
-    async def _handle_mention(self, message: discord.Message, content: str):
+    async def _handle_mention(self, message: discord.Message, content: str, is_conversation: bool = False):
         """Handle when bot is mentioned."""
         prompt = format_response(content)
         context = self._build_context(str(message.channel.id))
 
+        # If this is part of an ongoing conversation, give more context
+        if is_conversation:
+            thread_depth = self.conversation_threads.get(str(message.channel.id), {}).get("depth", 0)
+            prompt = f"[Conversation thread depth: {thread_depth}] {prompt}"
+
         try:
             async with message.channel.typing():
                 response = await self.llm_client.generate(prompt, chat_context=context)
-            await message.channel.send(
+            sent = await message.channel.send(
                 f"{message.author.mention}: {response}",
                 reference=message,
             )
+            # Store bot response in memory
+            if self.memory:
+                self.memory.add_message(
+                    channel_id=str(message.channel.id),
+                    guild_id=str(message.guild.id) if message.guild else None,
+                    author_name="fellasbot",
+                    author_id=str(self.bot.user.id),
+                    content=response,
+                )
         except Exception as e:
             logger.error(f"Error handling mention: {e}")
             await message.channel.send("Oops! I encountered an error while responding.")
