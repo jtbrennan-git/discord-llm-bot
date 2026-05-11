@@ -51,15 +51,25 @@ class MemoryStore:
             )
             conn.commit()
 
-    def get_recent(self, channel_id: str, limit: int = 20) -> List[Tuple[str, str, str]]:
-        """Get recent messages for a channel, returns (author_name, content, created_at)."""
+    def get_recent(self, channel_id: str, limit: int = 20,
+                   exclude_author_id: Optional[str] = None) -> List[Tuple[str, str, str]]:
+        """Get recent messages for a channel, returns (author_name, content, created_at).
+           Optionally exclude messages from a specific author (e.g. the bot itself)."""
         with sqlite3.connect(self.db_path) as conn:
-            rows = conn.execute(
-                """SELECT author_name, content, created_at FROM messages 
-                   WHERE channel_id = ? 
-                   ORDER BY created_at DESC LIMIT ?""",
-                (channel_id, limit)
-            ).fetchall()
+            if exclude_author_id:
+                rows = conn.execute(
+                    """SELECT author_name, content, created_at FROM messages 
+                       WHERE channel_id = ? AND author_id != ?
+                       ORDER BY created_at DESC LIMIT ?""",
+                    (channel_id, exclude_author_id, limit)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT author_name, content, created_at FROM messages 
+                       WHERE channel_id = ? 
+                       ORDER BY created_at DESC LIMIT ?""",
+                    (channel_id, limit)
+                ).fetchall()
         return list(reversed(rows))
 
     def get_user_history(self, author_id: str, limit: int = 10) -> List[Tuple[str, str]]:

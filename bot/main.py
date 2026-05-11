@@ -213,8 +213,8 @@ class DiscordLLMBot:
         if thread_depth >= 3:
             return
 
-        # Get recent context and ask the LLM if it's worth joining
-        context = self._build_context(channel_id)
+        # Get recent context (excluding bot's own messages) and ask if it's worth joining
+        context = self._build_context(channel_id, for_spontaneous=True)
         if not context:
             return
 
@@ -265,18 +265,29 @@ class DiscordLLMBot:
 
     def _build_meta_prompt(self, context: List[Dict[str, str]]) -> str:
         """Build a meta-prompt asking the bot whether to join the conversation."""
-        convo = "\n".join([f"{m['content']}" for m in context])
-        return (
-            f"Here's the recent conversation in a Discord channel:\n\n{convo}\n\n"
-            f"You're a sarcastic, funny Discord bot. Should you join this conversation?\n\n"
-            f"Respond with ONE of:\n"
-            f"- 'SILENT: reason' if you have nothing worth saying (default to this)\n"
-            f"- 'REACT: emoji' if a funny emoji reaction is enough (e.g. 'REACT: 💀')\n"
-            f"- 'REPLY: your message' if you have something genuinely funny/interesting to add\n\n"
-            f"Be restrained. Only REPLY if you have something genuinely good. "
-            f"Prefer SILENT or REACT. Keep replies short and punchy.\n\n"
-            f"Decision:"
-        )
+        convo = "\n".join([m["content"] for m in context])
+        lines = [
+            "Here's the recent human conversation in a Discord channel (your own messages are excluded):",
+            "",
+            convo,
+            "",
+            "You're a sarcastic, funny Discord bot deciding whether to chime in.",
+            "",
+            "Rules:",
+            "1. If this conversation is already resolved or someone already answered the question, stay SILENT.",
+            "2. If you'd just be repeating what someone already said, stay SILENT.",
+            "3. If the topic is boring/small-talk and you have nothing funny to add, stay SILENT.",
+            "4. You are NOT a helpful assistant. Don't offer to help unless it's funny.",
+            "5. Default to SILENT. Only join if you have something genuinely witty.",
+            "",
+            "Respond with ONE line:",
+            "- 'SILENT: brief reason' — almost always this one",
+            "- 'REACT: emoji' — if a perfect emoji reaction sums it up (e.g. 'REACT: 💀', 'REACT: 🔥')",
+            "- 'REPLY: your exact message' — max 2 sentences, punchy, no preamble, no sign-off",
+            "",
+            "Decision:",
+        ]
+        return "\n".join(lines)
 
     def _extract_reaction(self, decision: str) -> str:
         """Extract emoji from a REACT decision."""
@@ -301,11 +312,16 @@ class DiscordLLMBot:
         """Called when bot joins a new guild."""
         logger.info(f"Joined new guild: {guild.name}")
 
-    def _build_context(self, channel_id: str) -> List[Dict[str, str]]:
-        """Build chat context from memory for a channel."""
+    def _build_context(self, channel_id: str, for_spontaneous: bool = False) -> List[Dict[str, str]]:
+        """Build chat context from memory for a channel.
+           If for_spontaneous, exclude the bot's own messages so it doesn't
+           see its previous responses as conversation to react to."""
         if not self.memory:
             return []
-        recent = self.memory.get_recent(channel_id, limit=15)
+        bot_id = str(self.bot.user.id) if self.bot and self.bot.user else None
+        limit = 20 if for_spontaneous else 15
+        recent = self.memory.get_recent(channel_id, limit=limit,
+                                         exclude_author_id=bot_id if for_spontaneous else None)
         context = []
         for author_name, content, _ in recent:
             context.append({"role": "user", "content": f"{author_name}: {content}"})
@@ -314,12 +330,8 @@ class DiscordLLMBot:
     async def _handle_mention(self, message: discord.Message, content: str, is_conversation: bool = False):
         """Handle when bot is mentioned."""
         prompt = format_response(content)
-        context = self._build_context(str(message.channel.id))
-
-        # If this is part of an ongoing conversation, give more context
-        if is_conversation:
-            thread_depth = self.conversation_threads.get(str(message.channel.id), {}).get("depth", 0)
-            prompt = f"[Conversation thread depth: {thread_depth}] {prompt}"
+        # Include bot's own messages so it can continue conversations naturally
+        context = self._build_context(str(message.channel.id), for_spontaneous=False)
 
         try:
             async with message.channel.typing():
