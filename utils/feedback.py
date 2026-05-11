@@ -234,3 +234,65 @@ class FeedbackStore:
             conn.commit()
 
 
+class FeedbackTracker:
+    """Higher-level feedback tracker that wraps FeedbackStore and manages
+    tracked bot messages, reaction counting, and lesson generation."""
+
+    def __init__(self, db_path: str = DB_PATH):
+        from collections import defaultdict
+        self.store = FeedbackStore(db_path)
+        self._tracked_messages: dict = {}  # message_id -> content
+        self.lessons: list = []
+        self.load_lessons()
+
+    def register_message(self, message_id: str, content: str):
+        """Track a bot message so we can later record reactions against it."""
+        self._tracked_messages[message_id] = content
+
+    def add_reaction(self, message_id: str, emoji: str, user_id: str):
+        """Record a reaction on a tracked bot message."""
+        if message_id not in self._tracked_messages:
+            return
+        content = self._tracked_messages[message_id]
+        self.store.add_feedback(
+            message_id=message_id,
+            channel_id="unknown",
+            author_id=user_id,
+            author_name="unknown",
+            bot_message=content,
+            reaction=emoji,
+        )
+
+    def get_feedback_context(self) -> Optional[str]:
+        """Get recent feedback as context for the LLM."""
+        return self.store.get_recent_feedback_context()
+
+    def get_stats(self) -> dict:
+        """Return feedback statistics."""
+        summary = self.store.get_feedback_summary()
+        total_positive = sum(s["count"] for s in summary if s["sentiment"] == "positive")
+        total_negative = sum(s["count"] for s in summary if s["sentiment"] == "negative")
+        total_tracked = len(self._tracked_messages)
+        return {
+            "total_positive": total_positive,
+            "total_negative": total_negative,
+            "total_tracked_messages": total_tracked,
+        }
+
+    def load_lessons(self):
+        """Load existing lessons from the store."""
+        raw = self.store.get_lessons()
+        self.lessons = [f"{cat}: {lesson}" for cat, lesson, conf in raw]
+
+    def update_lessons(self):
+        """Analyze negative feedback and generate/upsert lessons."""
+        negatives = self.store.get_negative_examples(limit=10)
+        if not negatives:
+            self.lessons = []
+            return
+        for msg, reaction in negatives:
+            lesson = f"Users reacted {reaction} to messages like: {msg[:80]}..."
+            self.store.add_lesson("negative_feedback", lesson)
+        self.load_lessons()
+
+
