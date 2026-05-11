@@ -68,3 +68,8 @@ class LLMClient:
 
         messages.append({"role": "user", "content": prompt})
         return messages
+
+
+def format_response(content: str) -> str:
+    """Clean up message content for LLM input."""
+    return content.strip()
