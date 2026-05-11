@@ -59,6 +59,7 @@ Don't announce which register you're in. Just be in it.
 class LLMConfig:
     """Configuration for LLM client."""
     model: str = "openrouter/owl-alpha"
+    fallback_models: list = None  
     vision_model: str = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
     image_model: str = "recraft/recraft-v4-pro"
     api_key: Optional[str] = None
@@ -66,6 +67,13 @@ class LLMConfig:
     temperature: float = 0.7
     max_tokens: int = 512
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
+
+    def __post_init__(self):
+        if self.fallback_models is None:
+            self.fallback_models = [
+                "nvidia/nemotron-3-super-120b-a12b:free",
+                "z-ai/glm-4.5-air:free",
+            ]
 
 
 class ParsedResponse:
@@ -98,55 +106,72 @@ class LLMClient:
                        chat_context: Optional[List[Dict[str, str]]] = None,
                        image_urls: Optional[List[str]] = None) -> str:
         """Generate a response. Returns raw text with [TAG] prefix.
-        Retries with exponential backoff on transient errors."""
+        Tries primary model first, then falls back to configured models on failure."""
         if self._client is None:
             return "[REPLY] LLM is not configured. Set LLM_API_KEY or LLM_BASE_URL."
 
-        # Use vision model when images are present
-        model = self.config.vision_model if image_urls else self.config.model
+        # Build model list: primary model first, then fallbacks
+        if image_urls:
+            # Vision models don't have fallbacks for now
+            models = [self.config.vision_model]
+        else:
+            models = [self.config.model]
+            # Append fallback models
+            if self.config.fallback_models:
+                models.extend(self.config.fallback_models)
 
         messages = self._build_messages(prompt, system_prompt, chat_context, image_urls)
 
-        last_error = None
-        for attempt in range(MAX_RETRIES + 1):
-            try:
-                logger.debug(f"LLM call: model={model}, images={bool(image_urls)}, prompt_len={len(prompt)}")
-                response = self._client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    temperature=self.config.temperature,
-                    max_tokens=self.config.max_tokens,
-                )
-                if not response or not response.choices:
-                    raise openai.APIError(f"Empty response from {model}")
-                return response.choices[0].message.content or ""
-            except openai.RateLimitError as e:
-                last_error = e
-                if attempt < MAX_RETRIES:
-                    delay = RETRY_DELAYS[attempt]
-                    logger.warning(f"Rate limited — retrying in {delay}s ({attempt + 1}/{MAX_RETRIES})")
-                    await asyncio.sleep(delay)
-                else:
-                    logger.error(f"Rate limit exhausted after {MAX_RETRIES} retries")
-            except openai.APIError as e:
-                last_error = e
-                if attempt < MAX_RETRIES:
-                    delay = RETRY_DELAYS[attempt]
-                    logger.warning(f"API error — retrying in {delay}s ({attempt + 1}/{MAX_RETRIES}): {e}")
-                    await asyncio.sleep(delay)
-                else:
-                    logger.error(f"API failed after {MAX_RETRIES} retries: {e}")
-            except openai.APIConnectionError as e:
-                last_error = e
-                if attempt < MAX_RETRIES:
-                    delay = RETRY_DELAYS[attempt]
-                    logger.warning(f"Connection error — retrying in {delay}s ({attempt + 1}/{MAX_RETRIES})")
-                    await asyncio.sleep(delay)
-                else:
-                    logger.error(f"Connection failed after {MAX_RETRIES} retries: {e}")
+        # Try each model in order. For each model, retry on transient errors.
+        for model_idx, model in enumerate(models):
+            last_error = None
+            for attempt in range(MAX_RETRIES + 1):
+                try:
+                    logger.debug(f"LLM call: model={model}, images={bool(image_urls)}, prompt_len={len(prompt)}")
+                    response = self._client.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        temperature=self.config.temperature,
+                        max_tokens=self.config.max_tokens,
+                    )
+                    if not response or not response.choices:
+                        raise openai.APIError(f"Empty response from {model}")
+                    if model_idx > 0:
+                        logger.warning(f"Fallback model {model} succeeded after primary failed")
+                    return response.choices[0].message.content or ""
+                except openai.RateLimitError as e:
+                    last_error = e
+                    if attempt < MAX_RETRIES:
+                        delay = RETRY_DELAYS[attempt]
+                        logger.warning(f"Rate limited on {model} — retrying in {delay}s ({attempt + 1}/{MAX_RETRIES})")
+                        await asyncio.sleep(delay)
+                    else:
+                        logger.error(f"Rate limit exhausted on {model} after {MAX_RETRIES} retries")
+                except openai.APIError as e:
+                    last_error = e
+                    # Non-retryable errors: move to next model immediately
+                    if "model not found" in str(e).lower() or "does not exist" in str(e).lower():
+                        logger.error(f"Model {model} unavailable: {e}")
+                        break
+                    if attempt < MAX_RETRIES:
+                        delay = RETRY_DELAYS[attempt]
+                        logger.warning(f"API error on {model} — retrying in {delay}s ({attempt + 1}/{MAX_RETRIES}): {e}")
+                        await asyncio.sleep(delay)
+                    else:
+                        logger.error(f"API failed on {model} after {MAX_RETRIES} retries: {e}")
+                except openai.APIConnectionError as e:
+                    last_error = e
+                    if attempt < MAX_RETRIES:
+                        delay = RETRY_DELAYS[attempt]
+                        logger.warning(f"Connection error on {model} — retrying in {delay}s ({attempt + 1}/{MAX_RETRIES})")
+                        await asyncio.sleep(delay)
+                    else:
+                        logger.error(f"Connection failed on {model} after {MAX_RETRIES} retries: {e}")
+            
+            # If we exhausted retries for this model, log and try the next
+            logger.warning(f"Model {model} failed, trying next model...")
 
-        # All retries exhausted
-        return f"[REPLY] Having trouble reaching the LLM. Try again in a bit. ({last_error})"
+        return f"[REPLY] Having trouble reaching the LLM. All models failed. ({last_error})"
 
     def parse_response(self, text: str) -> ParsedResponse:
         """Parse a [TAG] response into action + content."""
