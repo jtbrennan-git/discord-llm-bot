@@ -18,7 +18,7 @@ class BotConfig:
         # LLM settings
         self.llm_model: str = os.getenv("LLM_MODEL", "openrouter/owl-alpha")
         self.vision_model: str = os.getenv("VISION_MODEL", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free")
-        self.image_model: str = os.getenv("IMAGE_MODEL", "recraft/recraft-v4-pro")
+        self.image_model: str = os.getenv("IMAGE_MODEL", "")
         self.llm_api_key: Optional[str] = os.getenv("LLM_API_KEY", None)
         self.llm_base_url: Optional[str] = os.getenv("LLM_BASE_URL", None)
         self.temperature: float = float(os.getenv("TEMPERATURE", "0.8"))

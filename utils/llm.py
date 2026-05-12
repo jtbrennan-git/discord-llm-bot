@@ -61,7 +61,7 @@ class LLMConfig:
     model: str = "openrouter/owl-alpha"
     fallback_models: list = None  
     vision_model: str = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
-    image_model: str = "recraft/recraft-v4-pro"
+    image_model: str = ""
     api_key: Optional[str] = None
     base_url: Optional[str] = None
     temperature: float = 0.7
