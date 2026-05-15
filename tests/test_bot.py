@@ -6,6 +6,7 @@ import pytest
 import json
 import os
 import tempfile
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 from config.config import BotConfig
@@ -189,6 +190,66 @@ class TestBotNameDetection:
         user.display_name = "Server Nick"
         user.name = "account_name"
         assert DiscordLLMBot._server_display_name(user) == "Server Nick"
+
+
+class TestResponseSending:
+    class FakeHistory:
+        def __init__(self, messages):
+            self.messages = messages
+
+        def __aiter__(self):
+            self._iter = iter(self.messages)
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._iter)
+            except StopIteration:
+                raise StopAsyncIteration
+
+    class FakeChannel:
+        def __init__(self, newer_messages=None):
+            self.newer_messages = newer_messages or []
+            self.sent = []
+
+        def history(self, **kwargs):
+            return TestResponseSending.FakeHistory(self.newer_messages)
+
+        async def send(self, content, **kwargs):
+            self.sent.append((content, kwargs))
+            sent = MagicMock()
+            sent.id = 999
+            return sent
+
+    def setup_method(self):
+        self.bot = object.__new__(DiscordLLMBot)
+        self.bot.feedback = MagicMock()
+        self.bot.bot_message_map = {}
+        self.bot.bot = MagicMock()
+        self.bot.bot.user = MagicMock()
+        self.bot.bot.user.id = 42
+        self.trigger = MagicMock()
+        self.trigger.id = 123
+        self.trigger.guild = MagicMock()
+        self.trigger.created_at = datetime.now(timezone.utc)
+
+    async def _send_with_newer_messages(self, newer_messages):
+        self.trigger.channel = self.FakeChannel(newer_messages)
+        await self.bot._send_tracked_response(self.trigger, "hello")
+        return self.trigger.channel.sent[0][1]
+
+    @pytest.mark.asyncio
+    async def test_plain_send_when_no_new_messages(self):
+        kwargs = await self._send_with_newer_messages([])
+        assert "reference" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_threaded_reply_when_chat_moved_on(self):
+        newer = MagicMock()
+        newer.id = 456
+        newer.author.id = 7
+        kwargs = await self._send_with_newer_messages([newer])
+        assert kwargs["reference"] is self.trigger
 
 
 class TestMemoryStore:

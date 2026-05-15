@@ -388,7 +388,7 @@ class DiscordLLMBot:
                 self._record_action_audit(message, action_type="dry_run_image_analysis", reason=parsed.content[:200])
                 self._reset_channel_counters(channel_id)
                 return
-            await self._send_tracked(message.channel, parsed.content, reference=message)
+            await self._send_tracked_response(message, parsed.content)
             await self._maybe_apply_supplemental_reaction(message, parsed.reaction, channel_id)
             self._reset_channel_counters(channel_id)
 
@@ -400,7 +400,7 @@ class DiscordLLMBot:
                     self._record_action_audit(message, action_type="dry_run_reply", reason=text[:200])
                     self._reset_channel_counters(channel_id)
                     return
-                sent = await self._send_tracked(message.channel, text, reference=message)
+                sent = await self._send_tracked_response(message, text)
                 if self.memory:
                     self.memory.add_message(
                         channel_id=channel_id,
@@ -623,6 +623,30 @@ class DiscordLLMBot:
         self.feedback.register_message(str(sent.id), content)
         self.bot_message_map[str(sent.id)] = content
         return sent
+
+    async def _send_tracked_response(self, trigger_message: discord.Message, content: str) -> discord.Message:
+        kwargs = {}
+        if await self._channel_has_newer_user_message(trigger_message):
+            kwargs["reference"] = trigger_message
+        return await self._send_tracked(trigger_message.channel, content, **kwargs)
+
+    async def _channel_has_newer_user_message(self, trigger_message: discord.Message) -> bool:
+        if not trigger_message.guild:
+            return False
+        try:
+            async for msg in trigger_message.channel.history(
+                limit=5,
+                after=trigger_message.created_at,
+                oldest_first=False,
+            ):
+                if msg.id == trigger_message.id:
+                    continue
+                if self.bot and self.bot.user and msg.author.id == self.bot.user.id:
+                    continue
+                return True
+        except Exception:
+            logger.debug("Could not inspect channel history for delayed reply check", exc_info=True)
+        return False
 
     async def _maybe_apply_supplemental_reaction(self, message: discord.Message, emoji: Optional[str], channel_id: str) -> None:
         if not emoji:
