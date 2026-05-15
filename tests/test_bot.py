@@ -7,7 +7,7 @@ import json
 import os
 import tempfile
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from config.config import BotConfig
 from utils.llm import LLMClient, LLMConfig, ParsedResponse
@@ -222,6 +222,7 @@ class TestResponseSending:
 
     class FakeChannel:
         def __init__(self, newer_messages=None):
+            self.id = "c1"
             self.newer_messages = newer_messages or []
             self.sent = []
 
@@ -238,6 +239,10 @@ class TestResponseSending:
         self.bot = object.__new__(DiscordLLMBot)
         self.bot.feedback = MagicMock()
         self.bot.bot_message_map = {}
+        self.bot.active_followups = {}
+        self.bot.config = MagicMock()
+        self.bot.config.followup_window_messages = 4
+        self.bot.config.followup_window_seconds = 300
         self.bot.bot = MagicMock()
         self.bot.bot.user = MagicMock()
         self.bot.bot.user.id = 42
@@ -263,6 +268,38 @@ class TestResponseSending:
         newer.author.id = 7
         kwargs = await self._send_with_newer_messages([newer])
         assert kwargs["reference"] is self.trigger
+
+    def test_send_response_activates_followup_window(self):
+        self.bot._activate_followup_window("c1", "m1", "hello")
+
+        assert self.bot.active_followups["c1"]["message_id"] == "m1"
+        assert self.bot.active_followups["c1"]["remaining"] == 4
+
+    @pytest.mark.asyncio
+    async def test_implicit_followup_probability_can_fade_out(self):
+        self.bot.active_followups = {
+            "c1": {
+                "message_id": "m1",
+                "content": "hello",
+                "remaining": 1,
+                "expires_at": 9999999999,
+            }
+        }
+        self.bot.channel_states = MagicMock()
+        self.bot.action_audit = None
+        self.bot._generate_and_execute = AsyncMock()
+        message = MagicMock()
+        message.channel.id = "c1"
+        message.channel.__class__ = MagicMock()
+        message.content = "yeah"
+        message.author.display_name = "Alice"
+
+        with patch("bot.main.random.random", return_value=0.99):
+            handled = await self.bot._maybe_handle_implicit_followup(message)
+
+        assert handled is False
+        self.bot._generate_and_execute.assert_not_called()
+        assert "c1" not in self.bot.active_followups
 
 
 class TestMemoryStore:

@@ -70,6 +70,8 @@ class BotConfig:
         self.spontaneous_max_thread_depth: int = int(os.getenv("SPONTANEOUS_MAX_THREAD_DEPTH", "4"))
         self.spontaneous_idle_trigger_seconds: int = int(os.getenv("SPONTANEOUS_IDLE_TRIGGER_SECONDS", "1800"))
         self.spontaneous_idle_min_messages: int = int(os.getenv("SPONTANEOUS_IDLE_MIN_MESSAGES", "2"))
+        self.followup_window_messages: int = int(os.getenv("FOLLOWUP_WINDOW_MESSAGES", "4"))
+        self.followup_window_seconds: int = int(os.getenv("FOLLOWUP_WINDOW_SECONDS", "300"))
 
         # Validate
         if not self.discord_token:
@@ -99,6 +101,8 @@ class BotConfig:
             "SPONTANEOUS_MAX_THREAD_DEPTH": self.spontaneous_max_thread_depth,
             "SPONTANEOUS_IDLE_TRIGGER_SECONDS": self.spontaneous_idle_trigger_seconds,
             "SPONTANEOUS_IDLE_MIN_MESSAGES": self.spontaneous_idle_min_messages,
+            "FOLLOWUP_WINDOW_MESSAGES": self.followup_window_messages,
+            "FOLLOWUP_WINDOW_SECONDS": self.followup_window_seconds,
         }
         for name, value in positive_ints.items():
             if value <= 0:

@@ -75,6 +75,7 @@ class DiscordLLMBot:
         self.setup_complete = False
         self.channel_states = ChannelStateStore()
         self.bot_message_map: Dict[str, str] = {}
+        self.active_followups: Dict[str, dict] = {}
         self.bot_topic_map: Dict[str, int] = {}
         self.channel_topic_starters: Dict[str, dict] = {}
         self.learning_message_counts: Dict[str, int] = {}
@@ -248,6 +249,9 @@ class DiscordLLMBot:
         if self._message_names_bot(message.content):
             self.channel_states.mark_direct_interaction(channel_id)
             await self._handle_name_call(message)
+            return
+
+        if await self._maybe_handle_implicit_followup(message):
             return
 
         channel_state = self.channel_states.record_inbound(channel_id)
@@ -431,6 +435,67 @@ class DiscordLLMBot:
         )
         await self._generate_and_execute(message, prompt, for_spontaneous=True)
         self._record_action_audit(message, action_type="name_call", reason="fuzzy bot name detected")
+
+    async def _maybe_handle_implicit_followup(self, message: discord.Message) -> bool:
+        if isinstance(message.channel, discord.DMChannel):
+            return False
+        channel_id = str(message.channel.id)
+        active = self.active_followups.get(channel_id)
+        if not active:
+            return False
+
+        import time
+        if time.time() > float(active.get("expires_at") or 0):
+            self.active_followups.pop(channel_id, None)
+            return False
+
+        remaining = int(active.get("remaining") or 0) - 1
+        active["remaining"] = remaining
+        if remaining < 0:
+            self.active_followups.pop(channel_id, None)
+            return False
+
+        max_messages = max(1, self.config.followup_window_messages)
+        chance = min(0.85, max(0.05, ((remaining + 1) / max_messages) ** 1.5))
+        roll = random.random()
+        if roll > chance:
+            self._record_action_audit(
+                message,
+                action_type="skip",
+                reason=f"implicit followup probability roll failed remaining={remaining}",
+                probability=chance,
+                roll=roll,
+                message_id=str(active.get("message_id") or ""),
+            )
+            if remaining <= 0:
+                self.active_followups.pop(channel_id, None)
+            return False
+
+        controls = self._channel_controls(channel_id)
+        if controls["quiet_enabled"] or not controls["spontaneous_enabled"]:
+            return False
+
+        prompt = (
+            "You recently sent a message in this Discord channel. A newer message arrived without using Discord's reply feature.\n"
+            "Decide whether this newer message is naturally replying to you or inviting you to keep talking.\n"
+            "If it is likely addressed to someone else, the room moved on, or no response is needed, return [SILENT].\n"
+            "If it is naturally responding to you, continue briefly with [REPLY]. Use [REACT] only when words add nothing.\n\n"
+            f"Your recent message: {active.get('content') or '(unknown)'}\n"
+            f"New message from {self._server_display_name(message.author)}: {message.content}"
+        )
+        self.channel_states.mark_direct_interaction(channel_id)
+        await self._generate_and_execute(message, prompt, for_spontaneous=True)
+        self._record_action_audit(
+            message,
+            action_type="implicit_followup",
+            reason=f"active bot message {active.get('message_id')} remaining={remaining}",
+            probability=chance,
+            roll=roll,
+            message_id=str(active.get("message_id") or ""),
+        )
+        if remaining <= 0:
+            self.active_followups.pop(channel_id, None)
+        return True
 
     async def _maybe_join_conversation(self, message: discord.Message):
         """Spontaneous join with counter-based probability + time decay."""
@@ -633,11 +698,25 @@ class DiscordLLMBot:
         self.bot_message_map[str(sent.id)] = content
         return sent
 
+    def _activate_followup_window(self, channel_id: str, message_id: str, content: str) -> None:
+        import time
+        if self.config.followup_window_messages <= 0 or self.config.followup_window_seconds <= 0:
+            self.active_followups.pop(channel_id, None)
+            return
+        self.active_followups[channel_id] = {
+            "message_id": str(message_id),
+            "content": content,
+            "remaining": self.config.followup_window_messages,
+            "expires_at": time.time() + self.config.followup_window_seconds,
+        }
+
     async def _send_tracked_response(self, trigger_message: discord.Message, content: str) -> discord.Message:
         kwargs = {}
         if await self._channel_has_newer_user_message(trigger_message):
             kwargs["reference"] = trigger_message
-        return await self._send_tracked(trigger_message.channel, content, **kwargs)
+        sent = await self._send_tracked(trigger_message.channel, content, **kwargs)
+        self._activate_followup_window(str(trigger_message.channel.id), str(sent.id), content)
+        return sent
 
     async def _channel_has_newer_user_message(self, trigger_message: discord.Message) -> bool:
         if not trigger_message.guild:
