@@ -187,12 +187,22 @@ class DiscordLLMBot:
             return
 
         channel_id = str(message.channel.id)
+        guild_id = str(message.guild.id) if message.guild else None
+        if guild_id in {self.config.control_guild_id, self.config.target_guild_id}:
+            logger.info(
+                "Message received guild_id=%s channel_id=%s channel_name=%s author_id=%s content_len=%s",
+                guild_id,
+                channel_id,
+                getattr(message.channel, "name", "dm"),
+                str(message.author.id),
+                len(message.content or ""),
+            )
         controls = self._channel_controls(channel_id)
 
         if self.memory:
             self.memory.add_message(
                 channel_id=channel_id,
-                guild_id=str(message.guild.id) if message.guild else None,
+                guild_id=guild_id,
                 author_name=message.author.display_name,
                 author_id=str(message.author.id),
                 content=message.content,
@@ -1534,17 +1544,55 @@ class ControlCommands(commands.Cog):
         seen_count = sum(1 for c in channels if str(c.id) in activity)
         lines = [
             f"**Coverage: {guild.name}**",
+            f"Target guild ID: {guild.id}",
             f"Visible text channels: {len(channels)}",
             f"Channels seen since current storage started: {seen_count}",
         ]
+        member = guild.me
         for channel in channels[:40]:
             item = activity.get(str(channel.id))
+            perms = channel.permissions_for(member) if member else None
+            access = []
+            if perms:
+                access.append("view" if perms.view_channel else "no-view")
+                access.append("read-history" if perms.read_message_history else "no-history")
+                access.append("send" if perms.send_messages else "no-send")
+            access_text = f" | {'/'.join(access)}" if access else ""
             if item:
-                lines.append(f"#{channel.name} | seen={item['count']} | last={item['last_seen']}")
+                lines.append(f"#{channel.name} | seen={item['count']} | last={item['last_seen']}{access_text}")
             else:
-                lines.append(f"#{channel.name} | seen=0 | last=never")
+                lines.append(f"#{channel.name} | seen=0 | last=never{access_text}")
         if len(channels) > 40:
             lines.append(f"...and {len(channels) - 40} more")
+        return lines
+
+    def _guilds_lines(self) -> List[str]:
+        lines = ["**Connected Guilds**"]
+        for guild in sorted(self.bot.guilds, key=lambda g: g.name.lower()):
+            marker = []
+            if str(guild.id) == self.config.control_guild_id:
+                marker.append("control")
+            if str(guild.id) == self.config.target_guild_id:
+                marker.append("target")
+            channels = [c for c in guild.channels if isinstance(c, (discord.TextChannel, discord.Thread))]
+            suffix = f" ({', '.join(marker)})" if marker else ""
+            lines.append(f"{guild.name} | id={guild.id}{suffix} | text_channels={len(channels)}")
+        if self.config.target_guild_id and not any(str(g.id) == self.config.target_guild_id for g in self.bot.guilds):
+            lines.append(f"Configured target guild {self.config.target_guild_id} is not in bot guild cache.")
+        return lines
+
+    def _activity_lines(self) -> List[str]:
+        lines = ["**Stored Activity Across Guilds**"]
+        if not self.memory:
+            return lines + ["Memory is not initialized."]
+        activity = self.memory.get_channel_activity(limit=50)
+        if not activity:
+            return lines + ["No messages stored yet."]
+        for item in activity:
+            channel = self.bot.get_channel(int(item["channel_id"])) if str(item["channel_id"]).isdigit() else None
+            guild_name = channel.guild.name if channel and getattr(channel, "guild", None) else "unknown guild"
+            channel_name = f"#{channel.name}" if channel else item["channel_id"]
+            lines.append(f"{guild_name} / {channel_name} | seen={item['count']} | last={item['last_seen']}")
         return lines
 
     @commands.command(name="control")
@@ -1586,6 +1634,14 @@ class ControlCommands(commands.Cog):
 
         if action == "coverage":
             await ctx.send("\n".join(self._coverage_lines())[:1900])
+            return
+
+        if action == "guilds":
+            await ctx.send("\n".join(self._guilds_lines())[:1900])
+            return
+
+        if action == "activity":
+            await ctx.send("\n".join(self._activity_lines())[:1900])
             return
 
         if action == "bind":
@@ -1817,7 +1873,7 @@ class ControlCommands(commands.Cog):
             "Usage: `!control status`, `channels`, `bind`, `aliases`, `dashboard [target]`, "
             "`quiet|learning|style|topics|starters|spontaneous <target> on|off`, "
             "`topics <target>`, `topic <target> ...`, `learn <target> [style|topics|all]`, "
-            "`coverage`, `seen <target>`, `say <target> <message>`, "
+            "`coverage`, `guilds`, `activity`, `seen <target>`, `say <target> <message>`, "
             "`delete <target> <message_id>`, `react <target> <message_id> <emoji>`"
         )
 
