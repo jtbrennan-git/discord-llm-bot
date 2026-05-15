@@ -162,6 +162,19 @@ class TestChannelState:
         state.record_inbound()
         assert store.get("123").message_count == 1
 
+    def test_store_persists_channel_state(self, tmp_path):
+        path = str(tmp_path / "channel_state.db")
+        store = ChannelStateStore(path)
+        store.record_inbound("123")
+        store.record_inbound("123")
+        store.mark_bot_action("456", now=100.0)
+
+        reloaded = ChannelStateStore(path)
+
+        assert reloaded.get("123").message_count == 2
+        assert reloaded.get("123").received_since_action == 2
+        assert reloaded.get("456").last_action_time == 100.0
+
 
 class TestBotNameDetection:
     def setup_method(self):

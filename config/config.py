@@ -68,6 +68,8 @@ class BotConfig:
         self.spontaneous_min_messages_since_action: int = int(os.getenv("SPONTANEOUS_MIN_MESSAGES_SINCE_ACTION", "6"))
         self.spontaneous_message_target: int = int(os.getenv("SPONTANEOUS_MESSAGE_TARGET", "18"))
         self.spontaneous_max_thread_depth: int = int(os.getenv("SPONTANEOUS_MAX_THREAD_DEPTH", "4"))
+        self.spontaneous_idle_trigger_seconds: int = int(os.getenv("SPONTANEOUS_IDLE_TRIGGER_SECONDS", "1800"))
+        self.spontaneous_idle_min_messages: int = int(os.getenv("SPONTANEOUS_IDLE_MIN_MESSAGES", "2"))
 
         # Validate
         if not self.discord_token:
@@ -95,6 +97,8 @@ class BotConfig:
             "SPONTANEOUS_MIN_MESSAGES_SINCE_ACTION": self.spontaneous_min_messages_since_action,
             "SPONTANEOUS_MESSAGE_TARGET": self.spontaneous_message_target,
             "SPONTANEOUS_MAX_THREAD_DEPTH": self.spontaneous_max_thread_depth,
+            "SPONTANEOUS_IDLE_TRIGGER_SECONDS": self.spontaneous_idle_trigger_seconds,
+            "SPONTANEOUS_IDLE_MIN_MESSAGES": self.spontaneous_idle_min_messages,
         }
         for name, value in positive_ints.items():
             if value <= 0:

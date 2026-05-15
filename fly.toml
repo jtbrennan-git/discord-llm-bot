@@ -5,6 +5,17 @@ primary_region = 'lhr'
 
 [env]
   PORT = '8080'
+  MEMORY_DB_PATH = '/data/bot_memory.db'
+  PROFILES_DB = '/data/bot_profiles.db'
+  FEEDBACK_DB_PATH = '/data/bot_feedback.db'
+  ACTION_AUDIT_DB_PATH = '/data/fellasbot_actions.db'
+  STYLE_GUIDE_DB_PATH = '/data/fellasbot_style.db'
+  TOPIC_LOG_DB_PATH = '/data/fellasbot_topics.db'
+  CHANNEL_STATE_DB = '/data/bot_channel_state.db'
+
+[mounts]
+  source = 'fellasbot_data'
+  destination = '/data'
 
 [[services]]
   internal_port = 8080

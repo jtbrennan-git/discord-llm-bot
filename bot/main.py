@@ -235,7 +235,7 @@ class DiscordLLMBot:
 
         if is_reply_to_bot:
             content = self._strip_bot_mentions(message.content) if bot_was_mentioned else message.content
-            channel_state.mark_direct_interaction()
+            self.channel_states.mark_direct_interaction(channel_id)
             await self._handle_message(message, content)
             return
 
@@ -246,12 +246,12 @@ class DiscordLLMBot:
             return
 
         if self._message_names_bot(message.content):
-            channel_state.mark_direct_interaction()
+            self.channel_states.mark_direct_interaction(channel_id)
             await self._handle_name_call(message)
             return
 
-        channel_state.record_inbound()
-        channel_state.decay_thread_depth()
+        channel_state = self.channel_states.record_inbound(channel_id)
+        self.channel_states.decay_thread_depth(channel_id)
 
         await self._maybe_join_conversation(message)
 
@@ -443,11 +443,21 @@ class DiscordLLMBot:
             self._record_action_audit(message, action_type="skip", reason="channel quiet/spontaneous disabled")
             return
         min_messages = self.config.spontaneous_min_messages_since_action
-        if channel_state.received_since_action < min_messages:
+        now = time.time()
+        last = channel_state.last_action_time
+        idle_seconds = now - last
+        idle_eligible = (
+            channel_state.received_since_action >= self.config.spontaneous_idle_min_messages
+            and idle_seconds >= self.config.spontaneous_idle_trigger_seconds
+        )
+        if channel_state.received_since_action < min_messages and not idle_eligible:
             self._record_action_audit(
                 message,
                 action_type="skip",
-                reason=f"not enough messages since action ({channel_state.received_since_action}/{min_messages})",
+                reason=(
+                    f"not enough messages since action ({channel_state.received_since_action}/{min_messages}); "
+                    f"idle={int(idle_seconds)}s"
+                ),
             )
             return
         if channel_state.thread_depth >= self.config.spontaneous_max_thread_depth:
@@ -458,12 +468,8 @@ class DiscordLLMBot:
         scale = self.config.spontaneous_message_target * 1.5
         chance = min(0.8, counter / scale)
 
-        # Time-based modifier: +0% (just acted) → +20% (been quiet 10+ minutes)
-        now = time.time()
-        last = channel_state.last_action_time
-        idle_seconds = now - last
-        # Linear ramp: 0% at 0s, +20% at 600s (10 min), cap at 20%
-        time_modifier = min(0.20, (idle_seconds / 600.0) * 0.20)
+        # Time-based modifier: +0% (just acted) -> +40% (been quiet 30+ minutes).
+        time_modifier = min(0.40, (idle_seconds / 1800.0) * 0.40)
         chance = min(0.90, chance + time_modifier)
 
         topic_started = await self._maybe_start_topic(message, channel_state, idle_seconds)
@@ -619,7 +625,7 @@ class DiscordLLMBot:
         return False
 
     def _reset_channel_counters(self, channel_id: str):
-        self.channel_states.get(channel_id).mark_bot_action()
+        self.channel_states.mark_bot_action(channel_id)
 
     async def _send_tracked(self, channel, content: str, **kwargs) -> discord.Message:
         sent = await channel.send(content, **kwargs)
