@@ -19,6 +19,7 @@ from utils.learning_safety import sanitize_learning_text
 from utils.style_guide import StyleGuideStore
 from utils.topic_log import TopicLearner, TopicLogStore
 from utils.memory import MemoryStore
+from bot.main import DiscordLLMBot
 
 
 # ─── LLM Parsing ────────────────────────────────────────────────────────
@@ -152,6 +153,29 @@ class TestChannelState:
         state = store.get("123")
         state.record_inbound()
         assert store.get("123").message_count == 1
+
+
+class TestBotNameDetection:
+    def setup_method(self):
+        self.bot = object.__new__(DiscordLLMBot)
+        user = MagicMock()
+        user.display_name = "fellasbot"
+        user.global_name = None
+        user.name = "fellasbot"
+        self.bot.bot = MagicMock()
+        self.bot.bot.user = user
+
+    def test_detects_exact_name_case_insensitive(self):
+        assert self.bot._message_names_bot("hey FELLASBOT what do you think")
+
+    def test_detects_spaced_name(self):
+        assert self.bot._message_names_bot("fellas bot get in here")
+
+    def test_detects_small_typo(self):
+        assert self.bot._message_names_bot("fellabot you seeing this")
+
+    def test_ignores_unrelated_text(self):
+        assert not self.bot._message_names_bot("the channel is quiet today")
 
 
 class TestMemoryStore:

@@ -10,6 +10,7 @@ import logging
 import asyncio
 import threading
 import random
+import re
 from typing import Optional, Dict, List
 
 import discord
@@ -246,6 +247,11 @@ class DiscordLLMBot:
             await self._handle_message(message, message.content)
             return
 
+        if self._message_names_bot(message.content):
+            channel_state.mark_direct_interaction()
+            await self._handle_name_call(message)
+            return
+
         channel_state.record_inbound()
         channel_state.decay_thread_depth()
 
@@ -410,6 +416,22 @@ class DiscordLLMBot:
         """Handle mentions and DMs."""
         await self._generate_and_execute(message, content, for_spontaneous=False)
 
+    async def _handle_name_call(self, message: discord.Message):
+        """Ask the LLM whether a fuzzy name call merits a response."""
+        controls = self._channel_controls(str(message.channel.id))
+        if controls["quiet_enabled"] or not controls["spontaneous_enabled"]:
+            self._record_action_audit(message, action_type="skip", reason="name call while quiet/spontaneous disabled")
+            return
+        prompt = (
+            f"Someone may have referred to you by name as {self._bot_identity()}.\n"
+            "Decide whether the message is actually inviting you into the conversation.\n"
+            "If it is just talking about you, quoting your name, or does not need you, return [SILENT].\n"
+            "If a quick reaction fits better, return [REACT: emoji]. Otherwise return [REPLY].\n\n"
+            f"Message: {message.content}"
+        )
+        await self._generate_and_execute(message, prompt, for_spontaneous=True)
+        self._record_action_audit(message, action_type="name_call", reason="fuzzy bot name detected")
+
     async def _maybe_join_conversation(self, message: discord.Message):
         """Spontaneous join with counter-based probability + time decay."""
         import time
@@ -521,6 +543,71 @@ class DiscordLLMBot:
 
     def _bot_identity(self) -> str:
         return self.bot.user.display_name if self.bot and self.bot.user else "bot"
+
+    def _bot_name_candidates(self) -> List[str]:
+        if not self.bot or not self.bot.user:
+            return ["bot"]
+        user = self.bot.user
+        names = [
+            getattr(user, "display_name", None),
+            getattr(user, "global_name", None),
+            getattr(user, "name", None),
+        ]
+        seen = set()
+        candidates = []
+        for name in names:
+            if not name:
+                continue
+            normalized = self._normalize_name_text(str(name))
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                candidates.append(normalized)
+        return candidates or ["bot"]
+
+    @staticmethod
+    def _normalize_name_text(text: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", text.lower())
+
+    @staticmethod
+    def _edit_distance_limited(a: str, b: str, limit: int = 2) -> int:
+        if abs(len(a) - len(b)) > limit:
+            return limit + 1
+        previous = list(range(len(b) + 1))
+        for i, ca in enumerate(a, 1):
+            current = [i]
+            row_min = current[0]
+            for j, cb in enumerate(b, 1):
+                cost = 0 if ca == cb else 1
+                value = min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost)
+                current.append(value)
+                row_min = min(row_min, value)
+            if row_min > limit:
+                return limit + 1
+            previous = current
+        return previous[-1]
+
+    def _message_names_bot(self, content: str) -> bool:
+        text = self._normalize_name_text(content)
+        if not text:
+            return False
+        words = [self._normalize_name_text(w) for w in re.findall(r"[A-Za-z0-9]+", content)]
+        words = [w for w in words if w]
+        compact_windows = set(words)
+        for size in (2, 3):
+            for i in range(0, max(0, len(words) - size + 1)):
+                compact_windows.add("".join(words[i:i + size]))
+
+        for candidate in self._bot_name_candidates():
+            if len(candidate) < 3:
+                continue
+            typo_limit = 1 if len(candidate) < 7 else 2
+            if candidate in text:
+                return True
+            for window in compact_windows:
+                if abs(len(window) - len(candidate)) <= typo_limit:
+                    if self._edit_distance_limited(window, candidate, typo_limit) <= typo_limit:
+                        return True
+        return False
 
     def _reset_channel_counters(self, channel_id: str):
         self.channel_states.get(channel_id).mark_bot_action()
