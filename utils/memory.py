@@ -8,7 +8,7 @@ import os
 import logging
 from contextlib import closing
 from datetime import datetime, timedelta
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,34 @@ class MemoryStore:
                 (author_id, limit)
             ).fetchall()
         return list(reversed(rows))
+
+    def get_channel_activity(self, guild_id: Optional[str] = None, limit: int = 50) -> List[Dict]:
+        """Return per-channel message counts and latest seen timestamp."""
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            if guild_id:
+                rows = conn.execute(
+                    """
+                    SELECT channel_id, COUNT(*) AS count, MAX(created_at) AS last_seen
+                    FROM messages
+                    WHERE guild_id = ?
+                    GROUP BY channel_id
+                    ORDER BY last_seen DESC
+                    LIMIT ?
+                    """,
+                    (guild_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT channel_id, COUNT(*) AS count, MAX(created_at) AS last_seen
+                    FROM messages
+                    GROUP BY channel_id
+                    ORDER BY last_seen DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+        return [{"channel_id": r[0], "count": r[1], "last_seen": r[2]} for r in rows]
 
     def cleanup_old(self, days: int = 7):
         """Remove messages older than N days."""

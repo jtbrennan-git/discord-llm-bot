@@ -1520,6 +1520,33 @@ class ControlCommands(commands.Cog):
             lines.append(f"...and {len(channels) - 20} more")
         return lines
 
+    def _coverage_lines(self) -> List[str]:
+        guild = self._target_guild()
+        if not guild:
+            return ["**Coverage**", "Target guild is not visible to this bot."]
+        activity = {}
+        if self.memory:
+            activity = {
+                item["channel_id"]: item
+                for item in self.memory.get_channel_activity(str(guild.id), limit=200)
+            }
+        channels = self._target_text_channels()
+        seen_count = sum(1 for c in channels if str(c.id) in activity)
+        lines = [
+            f"**Coverage: {guild.name}**",
+            f"Visible text channels: {len(channels)}",
+            f"Channels seen since current storage started: {seen_count}",
+        ]
+        for channel in channels[:40]:
+            item = activity.get(str(channel.id))
+            if item:
+                lines.append(f"#{channel.name} | seen={item['count']} | last={item['last_seen']}")
+            else:
+                lines.append(f"#{channel.name} | seen=0 | last=never")
+        if len(channels) > 40:
+            lines.append(f"...and {len(channels) - 40} more")
+        return lines
+
     @commands.command(name="control")
     async def control(self, ctx, action: str = "status", target: str = "", *, rest: str = ""):
         if not self._is_control_admin(ctx):
@@ -1555,6 +1582,10 @@ class ControlCommands(commands.Cog):
             if len(channels) > 40:
                 lines.append(f"...and {len(channels) - 40} more")
             await ctx.send("\n".join(lines)[:1900])
+            return
+
+        if action == "coverage":
+            await ctx.send("\n".join(self._coverage_lines())[:1900])
             return
 
         if action == "bind":
@@ -1623,6 +1654,23 @@ class ControlCommands(commands.Cog):
             ]
             if last:
                 lines.append(f"Last action: {last['created_at']} {last['action_type']} - {last['reason']}")
+            await ctx.send("\n".join(lines)[:1900])
+            return
+
+        if action == "seen":
+            recent = self.memory.get_recent(channel_id, limit=5) if self.memory else []
+            activity = self.memory.get_channel_activity(self.config.target_guild_id or None, limit=200) if self.memory else []
+            summary = next((item for item in activity if item["channel_id"] == channel_id), None)
+            lines = [
+                f"**Seen: {self._target_label(channel_id)}**",
+                f"Messages stored: {summary['count'] if summary else 0}",
+                f"Last seen: {summary['last_seen'] if summary else 'never'}",
+            ]
+            if recent:
+                lines.append("Recent:")
+                for author, content, created_at in recent:
+                    short = content[:80] + ("..." if len(content) > 80 else "")
+                    lines.append(f"{created_at} {author}: {short}")
             await ctx.send("\n".join(lines)[:1900])
             return
 
@@ -1769,7 +1817,8 @@ class ControlCommands(commands.Cog):
             "Usage: `!control status`, `channels`, `bind`, `aliases`, `dashboard [target]`, "
             "`quiet|learning|style|topics|starters|spontaneous <target> on|off`, "
             "`topics <target>`, `topic <target> ...`, `learn <target> [style|topics|all]`, "
-            "`say <target> <message>`, `delete <target> <message_id>`, `react <target> <message_id> <emoji>`"
+            "`coverage`, `seen <target>`, `say <target> <message>`, "
+            "`delete <target> <message_id>`, `react <target> <message_id> <emoji>`"
         )
 
 

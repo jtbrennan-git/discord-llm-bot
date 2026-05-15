@@ -18,6 +18,7 @@ from utils.action_audit import ActionAuditStore
 from utils.learning_safety import sanitize_learning_text
 from utils.style_guide import StyleGuideStore
 from utils.topic_log import TopicLearner, TopicLogStore
+from utils.memory import MemoryStore
 
 
 # ─── LLM Parsing ────────────────────────────────────────────────────────
@@ -151,6 +152,27 @@ class TestChannelState:
         state = store.get("123")
         state.record_inbound()
         assert store.get("123").message_count == 1
+
+
+class TestMemoryStore:
+    def setup_method(self):
+        self.fd, self.path = tempfile.mkstemp(suffix=".db")
+        self.store = MemoryStore(self.path)
+
+    def teardown_method(self):
+        os.close(self.fd)
+        os.unlink(self.path)
+
+    def test_channel_activity_counts_messages(self):
+        self.store.add_message("c1", "g1", "alice", "u1", "hello")
+        self.store.add_message("c1", "g1", "bob", "u2", "hi")
+        self.store.add_message("c2", "g1", "alice", "u1", "elsewhere")
+
+        activity = self.store.get_channel_activity("g1")
+        counts = {item["channel_id"]: item["count"] for item in activity}
+
+        assert counts["c1"] == 2
+        assert counts["c2"] == 1
 
 
 class TestPromptBuilder:
