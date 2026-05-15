@@ -1478,6 +1478,12 @@ class ControlCommands(commands.Cog):
         await channel.send(text)
         return True
 
+    async def _fetch_target_message(self, channel_id: str, message_id: str):
+        channel = self.bot.get_channel(int(channel_id))
+        if not channel:
+            channel = await self.bot.fetch_channel(int(channel_id))
+        return await channel.fetch_message(int(message_id))
+
     def _guild_dashboard_lines(self) -> List[str]:
         guild = self._target_guild()
         if not guild:
@@ -1704,10 +1710,66 @@ class ControlCommands(commands.Cog):
                 await ctx.send("Could not find or send to that target channel.")
             return
 
+        if action == "delete":
+            message_id = rest.strip().split()[0] if rest.strip() else ""
+            if not message_id.isdigit():
+                await ctx.send("Usage: `!control delete <target> <message_id>`")
+                return
+            try:
+                msg = await self._fetch_target_message(channel_id, message_id)
+                await msg.delete()
+            except discord.NotFound:
+                await ctx.send("Target message was not found.")
+                return
+            except discord.Forbidden:
+                await ctx.send("I do not have permission to delete that message.")
+                return
+            except discord.HTTPException as exc:
+                await ctx.send(f"Discord rejected the delete: {exc}")
+                return
+            self.action_audit.record(
+                channel_id=channel_id,
+                guild_id=self.config.target_guild_id or None,
+                action_type="control_delete",
+                reason=f"message={message_id} by {ctx.author.id}",
+                message_id=message_id,
+            )
+            await ctx.send("Deleted.")
+            return
+
+        if action == "react":
+            parts = rest.strip().split(maxsplit=1)
+            if len(parts) < 2 or not parts[0].isdigit():
+                await ctx.send("Usage: `!control react <target> <message_id> <emoji>`")
+                return
+            message_id, emoji = parts[0], parts[1].strip()
+            try:
+                msg = await self._fetch_target_message(channel_id, message_id)
+                await msg.add_reaction(emoji)
+            except discord.NotFound:
+                await ctx.send("Target message was not found.")
+                return
+            except discord.Forbidden:
+                await ctx.send("I do not have permission to react to that message.")
+                return
+            except discord.HTTPException as exc:
+                await ctx.send(f"Discord rejected the reaction: {exc}")
+                return
+            self.action_audit.record(
+                channel_id=channel_id,
+                guild_id=self.config.target_guild_id or None,
+                action_type="control_react",
+                reason=f"message={message_id} emoji={emoji} by {ctx.author.id}",
+                message_id=message_id,
+            )
+            await ctx.send("Reacted.")
+            return
+
         await ctx.send(
             "Usage: `!control status`, `channels`, `bind`, `aliases`, `dashboard [target]`, "
             "`quiet|learning|style|topics|starters|spontaneous <target> on|off`, "
-            "`topics <target>`, `topic <target> ...`, `learn <target> [style|topics|all]`, `say <target> <message>`"
+            "`topics <target>`, `topic <target> ...`, `learn <target> [style|topics|all]`, "
+            "`say <target> <message>`, `delete <target> <message_id>`, `react <target> <message_id> <emoji>`"
         )
 
 
