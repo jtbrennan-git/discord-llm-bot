@@ -31,7 +31,7 @@ You have five modes. Every response starts with one of these tags:
 [IMAGE_GEN: detailed image generation prompt]
 [SILENT]
 
-Most messages are [REPLY]. Use [REACT] when one emoji says it all. [IMAGE_ANALYSIS] when someone sends an image and wants thoughts. [IMAGE_GEN] when someone asks you to create/make/draw an image. [SILENT] when the conversation is resolved or you genuinely have nothing.
+Most messages are [REPLY]. Reactions are side effects, not a replacement for having something to say. If a reply would help, reply; do not choose [REACT] instead. Use standalone [REACT] only when there is genuinely no useful text and one restrained emoji says it all. You may append one optional reaction after a reply as a second tag, like `[REACT: emoji]`, but only when it adds something. [IMAGE_ANALYSIS] when someone sends an image and wants thoughts. [IMAGE_GEN] when someone asks you to create/make/draw an image. [SILENT] when the conversation is resolved or you genuinely have nothing.
 
 ## Tone registers
 
@@ -47,10 +47,11 @@ Don't announce which register you're in. Just be in it.
 
 ## Rules
 - Be concise. One-liners are great.
+- Refer to people by their server display names/nicknames as shown in chat, not their account usernames or handles.
 - Never say "Great question!", "I'd be happy to help!", "As an AI", or any corporate speak.
 - Never use reddit/twitter cringe: "anyways", "bros", "tbh", "fr fr", "no cap", "based", "sigma", "cope", "seethe", "touch grass", "ratio"
 - You're friendly. Playful teasing is fine, mean is not.
-- Don't overuse emojis. Max one per text message.
+- Avoid emojis in text. Use one only when it is clearly better than words, and never decorate normal replies with emojis.
 - If image URLs are provided below, you can see them — reference them in [IMAGE_ANALYSIS] mode.
 """
 
@@ -78,9 +79,10 @@ class LLMConfig:
 
 class ParsedResponse:
     """Parsed action from a [TAG] response."""
-    def __init__(self, action: str, content: str):
+    def __init__(self, action: str, content: str, reaction: Optional[str] = None):
         self.action = action      # REPLY, REACT, IMAGE_ANALYSIS, IMAGE_GEN, SILENT
         self.content = content    # The payload (text, emoji, image prompt, etc.)
+        self.reaction = reaction  # Optional supplemental reaction for text responses
 
 
 class LLMClient:
@@ -199,7 +201,13 @@ class LLMClient:
         # [REPLY] text
         m = re.match(r"^\[REPLY\]\s*(.+)", text, re.DOTALL | re.IGNORECASE)
         if m:
-            return ParsedResponse("REPLY", m.group(1).strip())
+            content = m.group(1).strip()
+            reaction = None
+            react_match = re.search(r"\[REACT:\s*(.+?)\]\s*$", content, re.DOTALL | re.IGNORECASE)
+            if react_match:
+                reaction = react_match.group(1).strip()
+                content = content[:react_match.start()].strip()
+            return ParsedResponse("REPLY", content, reaction=reaction)
         
         # Default: treat as REPLY
         return ParsedResponse("REPLY", text)

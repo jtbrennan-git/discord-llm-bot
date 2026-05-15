@@ -35,6 +35,13 @@ class TestParsedResponse:
         r = self.client.parse_response("[REPLY] hey there")
         assert r.action == "REPLY"
         assert r.content == "hey there"
+        assert r.reaction is None
+
+    def test_parse_reply_with_supplemental_reaction(self):
+        r = self.client.parse_response("[REPLY] yeah that tracks\n[REACT: 👍]")
+        assert r.action == "REPLY"
+        assert r.content == "yeah that tracks"
+        assert r.reaction == "👍"
 
     def test_parse_react(self):
         r = self.client.parse_response("[REACT: 💀]")
@@ -176,6 +183,12 @@ class TestBotNameDetection:
 
     def test_ignores_unrelated_text(self):
         assert not self.bot._message_names_bot("the channel is quiet today")
+
+    def test_server_display_name_prefers_nickname(self):
+        user = MagicMock()
+        user.display_name = "Server Nick"
+        user.name = "account_name"
+        assert DiscordLLMBot._server_display_name(user) == "Server Nick"
 
 
 class TestMemoryStore:

@@ -204,13 +204,13 @@ class DiscordLLMBot:
             self.memory.add_message(
                 channel_id=channel_id,
                 guild_id=guild_id,
-                author_name=message.author.display_name,
+                author_name=self._server_display_name(message.author),
                 author_id=str(message.author.id),
                 content=message.content,
             )
 
         if self.profiles:
-            self.profiles.upsert_user(str(message.author.id), message.author.display_name)
+            self.profiles.upsert_user(str(message.author.id), self._server_display_name(message.author))
 
         if self._learning_allowed(message) and controls["learning_enabled"]:
             self.learning_message_counts[channel_id] = self.learning_message_counts.get(channel_id, 0) + 1
@@ -389,6 +389,7 @@ class DiscordLLMBot:
                 self._reset_channel_counters(channel_id)
                 return
             await self._send_tracked(message.channel, parsed.content, reference=message)
+            await self._maybe_apply_supplemental_reaction(message, parsed.reaction, channel_id)
             self._reset_channel_counters(channel_id)
 
         elif parsed.action == "REPLY":
@@ -408,6 +409,7 @@ class DiscordLLMBot:
                         author_id=str(self.bot.user.id),
                         content=text,
                     )
+                await self._maybe_apply_supplemental_reaction(message, parsed.reaction, channel_id)
             self._reset_channel_counters(channel_id)
 
     # ─── Message Handlers ───────────────────────────────────────────────
@@ -426,7 +428,7 @@ class DiscordLLMBot:
             f"Someone may have referred to you by name as {self._bot_identity()}.\n"
             "Decide whether the message is actually inviting you into the conversation.\n"
             "If it is just talking about you, quoting your name, or does not need you, return [SILENT].\n"
-            "If a quick reaction fits better, return [REACT: emoji]. Otherwise return [REPLY].\n\n"
+            "If a reply would help, return [REPLY]. Only return standalone [REACT: emoji] when words would add nothing.\n\n"
             f"Message: {message.content}"
         )
         await self._generate_and_execute(message, prompt, for_spontaneous=True)
@@ -544,6 +546,10 @@ class DiscordLLMBot:
     def _bot_identity(self) -> str:
         return self.bot.user.display_name if self.bot and self.bot.user else "bot"
 
+    @staticmethod
+    def _server_display_name(user) -> str:
+        return getattr(user, "display_name", None) or getattr(user, "name", None) or str(user)
+
     def _bot_name_candidates(self) -> List[str]:
         if not self.bot or not self.bot.user:
             return ["bot"]
@@ -617,6 +623,17 @@ class DiscordLLMBot:
         self.feedback.register_message(str(sent.id), content)
         self.bot_message_map[str(sent.id)] = content
         return sent
+
+    async def _maybe_apply_supplemental_reaction(self, message: discord.Message, emoji: Optional[str], channel_id: str) -> None:
+        if not emoji:
+            return
+        if self.config.dry_run_actions:
+            logger.info("DRY_RUN would add supplemental reaction %s in channel_id=%s", emoji, channel_id)
+            return
+        try:
+            await message.add_reaction(emoji)
+        except discord.HTTPException:
+            logger.debug("Supplemental reaction failed channel_id=%s emoji=%s", channel_id, emoji)
 
     def _extract_image_urls(self, message: discord.Message) -> List[str]:
         """Extract image URLs from message attachments."""
