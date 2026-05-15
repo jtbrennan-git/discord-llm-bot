@@ -260,6 +260,7 @@ class TestTopicLogStore:
         topics = self.store.get_candidate_topics("c1")
 
         assert len(topics) == 1
+        assert self.store.count_channel_topics("c1") == 1
         assert topics[0]["seen_count"] == 2
         assert topics[0]["score"] == 1.5
 

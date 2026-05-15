@@ -140,6 +140,14 @@ class TopicLogStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def count_channel_topics(self, channel_id: str) -> int:
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM topics WHERE channel_id = ?",
+                (channel_id,),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
     def get_topic(self, topic_id: int) -> Optional[Dict[str, Any]]:
         with closing(sqlite3.connect(self.db_path)) as conn:
             conn.row_factory = sqlite3.Row

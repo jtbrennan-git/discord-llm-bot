@@ -1415,10 +1415,47 @@ class ControlCommands(commands.Cog):
             return False
         return str(ctx.author.id) in set(self.config.control_admin_ids)
 
+    def _target_guild(self):
+        if not self.config.target_guild_id:
+            return None
+        return self.bot.get_guild(int(self.config.target_guild_id))
+
+    def _target_text_channels(self):
+        guild = self._target_guild()
+        if not guild:
+            return []
+        return [
+            c for c in guild.channels
+            if isinstance(c, (discord.TextChannel, discord.Thread))
+        ]
+
     def _resolve_target(self, alias_or_id: str) -> Optional[str]:
-        if not self.action_audit:
-            return alias_or_id if alias_or_id.isdigit() else None
-        return self.action_audit.resolve_alias(alias_or_id)
+        value = (alias_or_id or "").strip()
+        if not value:
+            return None
+        if self.action_audit:
+            resolved = self.action_audit.resolve_alias(value)
+            if resolved:
+                return resolved
+        if value.startswith("<#") and value.endswith(">"):
+            value = value[2:-1]
+        if value.isdigit():
+            return value
+
+        wanted = value.lower().lstrip("#")
+        matches = []
+        for channel in self._target_text_channels():
+            if channel.name.lower() == wanted:
+                matches.append(channel)
+        if len(matches) == 1:
+            return str(matches[0].id)
+        return None
+
+    def _target_label(self, channel_id: str) -> str:
+        channel = self.bot.get_channel(int(channel_id)) if channel_id.isdigit() else None
+        if channel:
+            return f"#{channel.name}"
+        return channel_id
 
     def _format_controls(self, controls: dict) -> str:
         labels = {
@@ -1441,6 +1478,42 @@ class ControlCommands(commands.Cog):
         await channel.send(text)
         return True
 
+    def _guild_dashboard_lines(self) -> List[str]:
+        guild = self._target_guild()
+        if not guild:
+            return ["**Target Guild Dashboard**", "Target guild is not visible to this bot."]
+
+        channels = self._target_text_channels()
+        aliases = self.action_audit.list_aliases() if self.action_audit else []
+        alias_by_channel = {item["channel_id"]: item["alias"] for item in aliases}
+        lines = [
+            f"**Target Guild Dashboard: {guild.name}**",
+            f"Visible text channels: {len(channels)}",
+            f"Aliases: {len(aliases)}",
+        ]
+        for channel in channels[:20]:
+            cid = str(channel.id)
+            controls = self.action_audit.get_channel_controls(cid) if self.action_audit else {}
+            style = self.style_guides.get_channel_style(cid) if self.style_guides else None
+            topics = self.topic_log.get_candidate_topics(cid, limit=3) if self.topic_log else []
+            topic_count = self.topic_log.count_channel_topics(cid) if self.topic_log else 0
+            status = []
+            if controls.get("quiet_enabled"):
+                status.append("quiet")
+            if not controls.get("spontaneous_enabled", True):
+                status.append("no-spont")
+            if not controls.get("starters_enabled", True):
+                status.append("no-starters")
+            topic_names = ", ".join(t["label"] for t in topics) or "no topics"
+            alias = f" `{alias_by_channel[cid]}`" if cid in alias_by_channel else ""
+            lines.append(
+                f"#{channel.name}{alias} | style={style['confidence'] if style else 'none'} | "
+                f"{'/'.join(status) or 'active'} | topics={topic_count} | {topic_names}"
+            )
+        if len(channels) > 20:
+            lines.append(f"...and {len(channels) - 20} more")
+        return lines
+
     @commands.command(name="control")
     async def control(self, ctx, action: str = "status", target: str = "", *, rest: str = ""):
         if not self._is_control_admin(ctx):
@@ -1453,9 +1526,11 @@ class ControlCommands(commands.Cog):
 
         if action == "status":
             aliases = self.action_audit.list_aliases()
+            guild = self._target_guild()
             lines = [
                 "**Control Plane**",
-                f"Target guild: {self.config.target_guild_id or 'not set'}",
+                f"Target guild: {guild.name if guild else self.config.target_guild_id or 'not set'}",
+                f"Visible target channels: {len(self._target_text_channels())}",
                 f"Aliases: {len(aliases)}",
             ]
             for item in aliases[:10]:
@@ -1463,17 +1538,30 @@ class ControlCommands(commands.Cog):
             await ctx.send("\n".join(lines))
             return
 
+        if action == "channels":
+            channels = self._target_text_channels()
+            if not channels:
+                await ctx.send("No target channels visible.")
+                return
+            lines = ["**Target Channels**"]
+            for channel in channels[:40]:
+                lines.append(f"#{channel.name} -> {channel.id}")
+            if len(channels) > 40:
+                lines.append(f"...and {len(channels) - 40} more")
+            await ctx.send("\n".join(lines)[:1900])
+            return
+
         if action == "bind":
             parts = rest.split()
             if not target or not parts:
-                await ctx.send("Usage: `!control bind <alias> <target_channel_id>`")
+                await ctx.send("Usage: `!control bind <alias> <target_channel_id|#channel-name|channel-name>`")
                 return
-            channel_id = parts[0]
-            if not channel_id.isdigit():
-                await ctx.send("Target channel ID must be numeric.")
+            channel_id = self._resolve_target(parts[0])
+            if not channel_id:
+                await ctx.send("Could not resolve target channel.")
                 return
             self.action_audit.bind_alias(target, channel_id, self.config.target_guild_id or None)
-            await ctx.send(f"Bound `{target.lower()}` to `{channel_id}`.")
+            await ctx.send(f"Bound `{target.lower()}` to `{self._target_label(channel_id)}` (`{channel_id}`).")
             return
 
         if action == "unbind":
@@ -1495,9 +1583,13 @@ class ControlCommands(commands.Cog):
             await ctx.send("\n".join(lines)[:1900])
             return
 
+        if action == "dashboard" and not target:
+            await ctx.send("\n".join(self._guild_dashboard_lines())[:1900])
+            return
+
         channel_id = self._resolve_target(target)
         if not channel_id:
-            await ctx.send("Unknown target. Use a channel ID or bind an alias first.")
+            await ctx.send("Unknown target. Use a channel ID, channel name, #channel mention/name, or bound alias.")
             return
 
         if action in {"quiet", "learning", "style", "topics", "starters", "spontaneous"}:
@@ -1518,7 +1610,7 @@ class ControlCommands(commands.Cog):
             topic_summary = ", ".join(f"{t['id']}:{t['label']}({t['score']:.1f})" for t in topics) or "none"
             lines = [
                 f"**Dashboard: {target}**",
-                f"Channel ID: {channel_id}",
+                f"Channel: {self._target_label(channel_id)} (`{channel_id}`)",
                 f"Controls: {self._format_controls(controls)}",
                 f"Style confidence: {style['confidence'] if style else 'none'}",
                 f"Top topics: {topic_summary}",
@@ -1613,7 +1705,7 @@ class ControlCommands(commands.Cog):
             return
 
         await ctx.send(
-            "Usage: `!control status`, `bind`, `aliases`, `dashboard <target>`, "
+            "Usage: `!control status`, `channels`, `bind`, `aliases`, `dashboard [target]`, "
             "`quiet|learning|style|topics|starters|spontaneous <target> on|off`, "
             "`topics <target>`, `topic <target> ...`, `learn <target> [style|topics|all]`, `say <target> <message>`"
         )
