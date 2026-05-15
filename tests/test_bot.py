@@ -73,6 +73,11 @@ class TestParsedResponse:
         r = self.client.parse_response("[SILENT]\nNope")
         assert r.action == "SILENT"
 
+    def test_parse_silent_after_leaked_commentary(self):
+        r = self.client.parse_response("No clear reply needed.\n\n[SILENT]")
+        assert r.action == "SILENT"
+        assert r.content == ""
+
     def test_parse_fallback_no_tag(self):
         r = self.client.parse_response("just some text without a tag")
         assert r.action == "REPLY"

@@ -179,8 +179,8 @@ class LLMClient:
         """Parse a [TAG] response into action + content."""
         text = text.strip()
         
-        # [SILENT]
-        if text.upper().startswith("[SILENT]"):
+        # [SILENT], including cases where the model leaks commentary before the tag.
+        if re.search(r"\[SILENT\]", text, re.IGNORECASE):
             return ParsedResponse("SILENT", "")
         
         # [REACT: 💀]
