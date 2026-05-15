@@ -187,6 +187,7 @@ class DiscordLLMBot:
             return
 
         channel_id = str(message.channel.id)
+        controls = self._channel_controls(channel_id)
 
         if self.memory:
             self.memory.add_message(
