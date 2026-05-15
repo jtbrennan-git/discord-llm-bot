@@ -8,6 +8,7 @@ import os
 import sqlite3
 import json
 import logging
+from contextlib import closing
 from datetime import datetime
 from typing import Optional, Dict, List, Any
 
@@ -24,7 +25,7 @@ class UserProfileStore:
         self._init_db()
 
     def _init_db(self):
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS user_profiles (
                     user_id TEXT PRIMARY KEY,
@@ -43,12 +44,15 @@ class UserProfileStore:
 
     def upsert_user(self, user_id: str, display_name: str):
         """Ensure a user exists in the store. Creates or updates name/timestamps."""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             conn.execute("""
                 INSERT INTO user_profiles (user_id, display_name, last_seen, message_count)
                 VALUES (?, ?, CURRENT_TIMESTAMP, 1)
                 ON CONFLICT(user_id) DO UPDATE SET
-                    display_name = excluded.display_name,
+                    display_name = CASE
+                        WHEN excluded.display_name != '' THEN excluded.display_name
+                        ELSE user_profiles.display_name
+                    END,
                     last_seen = CURRENT_TIMESTAMP,
                     message_count = message_count + 1
             """, (user_id, display_name))
@@ -60,7 +64,7 @@ class UserProfileStore:
         facts = self.get_facts(user_id)
         if fact not in facts:
             facts.append(fact)
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 conn.execute(
                     "UPDATE user_profiles SET known_facts = ? WHERE user_id = ?",
                     (json.dumps(facts), user_id)
@@ -70,7 +74,7 @@ class UserProfileStore:
     def add_note(self, user_id: str, note: str, display_name: str = ""):
         """Append a personality observation."""
         self.upsert_user(user_id, display_name)
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             conn.execute("""
                 UPDATE user_profiles
                 SET personality_notes = personality_notes || '\n' || ?,
@@ -86,7 +90,7 @@ class UserProfileStore:
         items = self._get_json_list(user_id, col)
         if item not in items:
             items.append(item)
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 conn.execute(
                     f"UPDATE user_profiles SET {col} = ? WHERE user_id = ?",
                     (json.dumps(items), user_id)
@@ -94,7 +98,7 @@ class UserProfileStore:
                 conn.commit()
 
     def _get_json_list(self, user_id: str, col: str) -> List[str]:
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             row = conn.execute(
                 f"SELECT {col} FROM user_profiles WHERE user_id = ?", (user_id,)
             ).fetchone()
@@ -106,7 +110,7 @@ class UserProfileStore:
         return []
 
     def get_facts(self, user_id: str) -> List[str]:
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             row = conn.execute(
                 "SELECT known_facts FROM user_profiles WHERE user_id = ?", (user_id,)
             ).fetchone()
@@ -119,7 +123,7 @@ class UserProfileStore:
 
     def get_profile(self, user_id: str) -> Optional[Dict[str, Any]]:
         """Get the full profile dict for a user."""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 "SELECT * FROM user_profiles WHERE user_id = ?", (user_id,)
@@ -164,7 +168,7 @@ class UserProfileStore:
 
     def get_all_summaries(self, limit: int = 10) -> str:
         """Get summaries of all known users, limited to the most active."""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             rows = conn.execute(
                 "SELECT user_id FROM user_profiles ORDER BY message_count DESC LIMIT ?",
                 (limit,)
@@ -180,7 +184,7 @@ class UserProfileStore:
 
     def get_all_profiles(self) -> List[Dict[str, Any]]:
         """Get all profile dicts, sorted by activity."""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT * FROM user_profiles ORDER BY message_count DESC"
@@ -189,7 +193,7 @@ class UserProfileStore:
 
     def reset_profile(self, user_id: str):
         """Wipe a user's profile data but keep the record."""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             conn.execute("""
                 UPDATE user_profiles SET
                     known_facts = '[]',
@@ -203,6 +207,6 @@ class UserProfileStore:
 
     def delete_profile(self, user_id: str):
         """Fully delete a user's profile."""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             conn.execute("DELETE FROM user_profiles WHERE user_id = ?", (user_id,))
             conn.commit()

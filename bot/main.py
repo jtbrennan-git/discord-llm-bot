@@ -16,11 +16,16 @@ import discord
 from discord.ext import commands
 
 from config.config import BotConfig
-from utils.llm import LLMClient, LLMConfig, format_response, DEFAULT_SYSTEM_PROMPT, ParsedResponse
+from utils.llm import LLMClient, LLMConfig, DEFAULT_SYSTEM_PROMPT, ParsedResponse
 from utils.memory import MemoryStore
 from utils.feedback import FeedbackTracker
 from utils.image_gen import ImageGenerator
 from utils.profiles import UserProfileStore
+from utils.channel_state import ChannelStateStore
+from utils.prompts import build_system_prompt
+from utils.action_audit import ActionAuditStore
+from utils.style_guide import StyleGuideLearner, StyleGuideStore
+from utils.topic_log import TopicLearner, TopicLogStore
 
 IMPROVEMENTS_LOG = os.getenv("IMPROVEMENTS_LOG", "/tmp/bot_improvements.log")
 
@@ -69,12 +74,19 @@ class DiscordLLMBot:
         self.profiles: Optional[UserProfileStore] = None
         self.image_gen: Optional[ImageGenerator] = None
         self.setup_complete = False
-        self.message_counters: Dict[str, int] = {}
-        self.conversation_threads: Dict[str, dict] = {}
-        self.recv_message_counts: Dict[str, int] = {}
-        self.bot_message_map: Dict[int, str] = {}
+        self.channel_states = ChannelStateStore()
+        self.bot_message_map: Dict[str, str] = {}
+        self.bot_topic_map: Dict[str, int] = {}
+        self.channel_topic_starters: Dict[str, dict] = {}
+        self.learning_message_counts: Dict[str, int] = {}
+        self.style_guides: Optional[StyleGuideStore] = None
+        self.style_learner: Optional[StyleGuideLearner] = None
+        self.topic_log: Optional[TopicLogStore] = None
+        self.topic_learner: Optional[TopicLearner] = None
+        self.action_audit: Optional[ActionAuditStore] = None
+        self.learning_queue: Optional[asyncio.Queue] = None
+        self.learning_worker_task: Optional[asyncio.Task] = None
         self._learning_counter: int = 0
-        self.last_action_time: Dict[str, float] = {}  # channel_id -> last action timestamp
 
     async def setup(self):
         """Initialize bot, LLM client, and memory."""
@@ -107,6 +119,21 @@ class DiscordLLMBot:
         self.memory = MemoryStore()
         self.feedback = FeedbackTracker()
         self.profiles = UserProfileStore()
+        self.style_guides = StyleGuideStore()
+        self.style_learner = StyleGuideLearner(
+            self.style_guides,
+            interval=self.config.style_learning_interval,
+            context_limit=self.config.style_learning_context_limit,
+        )
+        self.topic_log = TopicLogStore()
+        self.topic_learner = TopicLearner(
+            self.topic_log,
+            interval=self.config.topic_learning_interval,
+            context_limit=self.config.topic_learning_context_limit,
+            starter_cooldown_seconds=self.config.topic_starter_cooldown_seconds,
+        )
+        self.action_audit = ActionAuditStore()
+        self.learning_queue = asyncio.Queue(maxsize=self.config.learning_queue_maxsize)
         self.image_gen = ImageGenerator(
             api_key=self.config.llm_api_key,
             model=self.config.image_model,
@@ -118,7 +145,31 @@ class DiscordLLMBot:
         self.bot.event(self.on_guild_join)
         self.bot.event(self.on_raw_reaction_add)
 
-        await self.bot.add_cog(MainCommands(self.bot, self.llm_client, self.memory, self.feedback, self.profiles))
+        await self.bot.add_cog(
+            MainCommands(
+                self.bot,
+                self.llm_client,
+                self.memory,
+                self.feedback,
+                self.profiles,
+                self.style_guides,
+                self.topic_log,
+                self.action_audit,
+                self.config,
+                self.learning_queue,
+            )
+        )
+        await self.bot.add_cog(
+            ControlCommands(
+                self.bot,
+                self.config,
+                self.memory,
+                self.style_guides,
+                self.topic_log,
+                self.action_audit,
+                self.learning_queue,
+            )
+        )
 
         self.setup_complete = True
         logger.info("Bot setup complete")
@@ -126,6 +177,8 @@ class DiscordLLMBot:
     async def on_ready(self):
         logger.info(f"Logged in as {self.bot.user} (ID: {self.bot.user.id})")
         logger.info(f"Connected to {len(self.bot.guilds)} guilds")
+        if not self.learning_worker_task or self.learning_worker_task.done():
+            self.learning_worker_task = asyncio.create_task(self._learning_worker())
 
     async def on_message(self, message: discord.Message):
         if message.author.bot:
@@ -147,49 +200,43 @@ class DiscordLLMBot:
         if self.profiles:
             self.profiles.upsert_user(str(message.author.id), message.author.display_name)
 
+        if self._learning_allowed(message) and controls["learning_enabled"]:
+            self.learning_message_counts[channel_id] = self.learning_message_counts.get(channel_id, 0) + 1
+            self._enqueue_group_learning(channel_id, str(message.guild.id) if message.guild else None)
+            self._expire_topic_starters()
+            self._record_topic_followup(channel_id)
+
         if self.profiles and message.guild:
             self._learning_counter += 1
             if self._learning_counter % 30 == 0:
                 await self._run_profile_learning(channel_id, str(message.guild.id))
 
-        if channel_id not in self.recv_message_counts:
-            self.recv_message_counts[channel_id] = 0
+        channel_state = self.channel_states.get(channel_id)
 
+        bot_was_mentioned = self.bot.user in message.mentions
         is_reply_to_bot = (
-            self.bot.user in message.mentions or
-            (message.reference and message.reference.message_id and
-             await self._is_bot_message(message.channel, message.reference.message_id))
+            bot_was_mentioned
+            or (
+                message.reference
+                and message.reference.message_id
+                and await self._is_bot_message(message.channel, message.reference.message_id)
+            )
         )
 
         if is_reply_to_bot:
-            self.recv_message_counts[channel_id] = 0
-            self.conversation_threads.setdefault(channel_id, {"depth": 0})["depth"] += 1
-            await self._handle_message(message, message.content)
+            content = self._strip_bot_mentions(message.content) if bot_was_mentioned else message.content
+            channel_state.mark_direct_interaction()
+            await self._handle_message(message, content)
             return
 
         await self.bot.process_commands(message)
-
-        if self.bot.user in message.mentions:
-            content = message.content
-            for mention in message.mentions:
-                content = content.replace(mention.mention, "")
-            content = content.strip()
-            self.recv_message_counts[channel_id] = 0
-            self.conversation_threads.setdefault(channel_id, {"depth": 0})["depth"] += 1
-            await self._handle_message(message, content)
-            return
 
         if isinstance(message.channel, discord.DMChannel):
             await self._handle_message(message, message.content)
             return
 
-        self.message_counters[channel_id] = self.message_counters.get(channel_id, 0) + 1
-        self.recv_message_counts[channel_id] = self.recv_message_counts.get(channel_id, 0) + 1
-
-        if channel_id in self.conversation_threads:
-            thread = self.conversation_threads[channel_id]
-            if self.recv_message_counts[channel_id] > 10:
-                thread["depth"] = max(0, thread["depth"] - 1)
+        channel_state.record_inbound()
+        channel_state.decay_thread_depth()
 
         await self._maybe_join_conversation(message)
 
@@ -202,29 +249,25 @@ class DiscordLLMBot:
 
     # ─── Unified Generation ─────────────────────────────────────────────
 
-    def _build_system_prompt(self) -> str:
+    def _build_system_prompt(self, channel_id: Optional[str] = None) -> str:
         """Assemble full system prompt with identity, profiles, and feedback."""
-        name = self._bot_identity()
-        prompt = DEFAULT_SYSTEM_PROMPT.replace("You are {name}", f"You are {name}")
-
-        # Inject profile context if available
-        if self.profiles:
-            all_profiles = self.profiles.get_all_profiles()
-            if all_profiles:
-                parts = ["## People you know"]
-                for p in all_profiles[:8]:  # Limit to avoid token bloat
-                    summary = self.profiles.get_profile_summary(p["user_id"])
-                    if summary:
-                        parts.append(summary)
-                prompt += "\n\n" + "\n\n".join(parts)
-
-        # Inject feedback context if available
-        if self.feedback:
-            fb = self.feedback.get_feedback_context()
-            if fb:
-                prompt += f"\n\n## Feedback on your behavior\n{fb}"
-
-        return prompt
+        base_prompt = (
+            self.llm_client.config.system_prompt
+            if self.llm_client and self.llm_client.config.system_prompt
+            else DEFAULT_SYSTEM_PROMPT
+        )
+        style_context = (
+            self.style_guides.get_prompt_context(channel_id)
+            if channel_id and self.style_guides and self._channel_controls(channel_id)["style_enabled"]
+            else None
+        )
+        return build_system_prompt(
+            bot_name=self._bot_identity(),
+            base_prompt=base_prompt,
+            profiles=self.profiles,
+            feedback=self.feedback,
+            style_context=style_context,
+        )
 
     def _build_context(self, channel_id: str, for_spontaneous: bool = False) -> List[Dict[str, str]]:
         """Build chat context using proper assistant/user roles."""
@@ -248,15 +291,21 @@ class DiscordLLMBot:
         channel_id = str(message.channel.id)
         image_urls = self._extract_image_urls(message)
         context = self._build_context(channel_id, for_spontaneous=for_spontaneous)
-        system_prompt = self._build_system_prompt()
+        system_prompt = self._build_system_prompt(channel_id)
 
         # Clean the input
         content = self._clean_reply_text(content)
 
         try:
             async with message.channel.typing():
-                logger.info(f"[IMAGE DEBUG] image_urls={image_urls}")
-                raw = await self.llm_client.generate(
+                logger.info(
+                    "LLM generation requested channel_id=%s guild_id=%s images=%s spontaneous=%s",
+                    channel_id,
+                    str(message.guild.id) if message.guild else None,
+                    bool(image_urls),
+                    for_spontaneous,
+                )
+                raw = await self._llm_generate(
                     content or "React to the chat.",
                     system_prompt=system_prompt,
                     chat_context=context,
@@ -273,8 +322,16 @@ class DiscordLLMBot:
                 )
             else:
                 feedback = "My brain fried for a sec. Try again?"
-            logger.error(f"Generation failed: {e}")
+            logger.exception("Generation failed channel_id=%s", channel_id)
             await message.channel.send(feedback)
+
+    async def _llm_generate(self, *args, **kwargs) -> str:
+        if not self.llm_client:
+            return "[REPLY] LLM is not configured."
+        return await asyncio.wait_for(
+            self.llm_client.generate(*args, **kwargs),
+            timeout=self.config.llm_timeout_seconds,
+        )
 
     async def _execute_action(self, parsed: ParsedResponse, message: discord.Message,
                                image_urls: List[str], channel_id: str) -> None:
@@ -284,6 +341,11 @@ class DiscordLLMBot:
 
         elif parsed.action == "REACT":
             emoji = parsed.content or "👍"
+            if self.config.dry_run_actions:
+                logger.info("DRY_RUN would react with %s in channel_id=%s", emoji, channel_id)
+                self._record_action_audit(message, action_type="dry_run_react", reason=emoji)
+                self._reset_channel_counters(channel_id)
+                return
             try:
                 await message.add_reaction(emoji)
             except discord.HTTPException:
@@ -296,20 +358,30 @@ class DiscordLLMBot:
                         return
                 await message.add_reaction("💀")
             # Track for feedback
-            if message.id not in self.bot_message_map:
-                self.bot_message_map[message.id] = f"[reacted with {emoji}]"
+            if str(message.id) not in self.bot_message_map:
+                self.bot_message_map[str(message.id)] = f"[reacted with {emoji}]"
             self._reset_channel_counters(channel_id)
 
         elif parsed.action == "IMAGE_GEN":
-            await self._do_image_gen(message, parsed.content or content)
+            await self._do_image_gen(message, parsed.content or "Create an image from the current chat.")
 
         elif parsed.action == "IMAGE_ANALYSIS":
+            if self.config.dry_run_actions:
+                logger.info("DRY_RUN would send image analysis in channel_id=%s: %s", channel_id, parsed.content)
+                self._record_action_audit(message, action_type="dry_run_image_analysis", reason=parsed.content[:200])
+                self._reset_channel_counters(channel_id)
+                return
             await self._send_tracked(message.channel, parsed.content, reference=message)
             self._reset_channel_counters(channel_id)
 
         elif parsed.action == "REPLY":
             text = self._strip_name_prefix(parsed.content)
             if text:
+                if self.config.dry_run_actions:
+                    logger.info("DRY_RUN would reply in channel_id=%s: %s", channel_id, text)
+                    self._record_action_audit(message, action_type="dry_run_reply", reason=text[:200])
+                    self._reset_channel_counters(channel_id)
+                    return
                 sent = await self._send_tracked(message.channel, text, reference=message)
                 if self.memory:
                     self.memory.add_message(
@@ -331,30 +403,49 @@ class DiscordLLMBot:
         """Spontaneous join with counter-based probability + time decay."""
         import time
         channel_id = str(message.channel.id)
+        controls = self._channel_controls(channel_id)
+        channel_state = self.channel_states.get(channel_id)
 
-        if self.recv_message_counts.get(channel_id, 999) < 15:
+        if controls["quiet_enabled"] or not controls["spontaneous_enabled"]:
+            self._record_action_audit(message, action_type="skip", reason="channel quiet/spontaneous disabled")
             return
-        if self.conversation_threads.get(channel_id, {}).get("depth", 0) >= 3:
+        if channel_state.received_since_action < 15:
+            self._record_action_audit(message, action_type="skip", reason="not enough messages since action")
+            return
+        if channel_state.thread_depth >= 3:
+            self._record_action_audit(message, action_type="skip", reason="thread depth too high")
             return
 
-        counter = self.message_counters.get(channel_id, 0) + 1
-        self.message_counters[channel_id] = counter
+        counter = channel_state.message_count
         scale = self.MESSAGE_TARGET * 1.5
         chance = min(0.8, counter / scale)
 
         # Time-based modifier: +0% (just acted) → +20% (been quiet 10+ minutes)
         now = time.time()
-        last = self.last_action_time.get(channel_id, now)
+        last = channel_state.last_action_time
         idle_seconds = now - last
         # Linear ramp: 0% at 0s, +20% at 600s (10 min), cap at 20%
         time_modifier = min(0.20, (idle_seconds / 600.0) * 0.20)
         chance = min(0.90, chance + time_modifier)
 
-        if random.random() > chance:
+        topic_started = await self._maybe_start_topic(message, channel_state, idle_seconds)
+        if topic_started:
+            return
+
+        roll = random.random()
+        if roll > chance:
+            self._record_action_audit(
+                message,
+                action_type="skip",
+                reason="spontaneous probability roll failed",
+                probability=chance,
+                roll=roll,
+            )
             return
 
         context = self._build_context(channel_id, for_spontaneous=True)
         if not context:
+            self._record_action_audit(message, action_type="skip", reason="no context for spontaneous response")
             return
 
         fresh_msg = None
@@ -366,10 +457,24 @@ class DiscordLLMBot:
         if fresh_msg:
             bandwagon_triggered = await self._check_bandwagon(message, fresh_msg)
             if bandwagon_triggered:
+                self._record_action_audit(
+                    message,
+                    action_type="bandwagon",
+                    reason="matched channel reaction pattern",
+                    probability=chance,
+                    roll=roll,
+                )
                 self._reset_channel_counters(channel_id)
                 return
 
         await self._generate_and_execute(message, None, for_spontaneous=True)
+        self._record_action_audit(
+            message,
+            action_type="spontaneous",
+            reason="counter/time probability passed",
+            probability=chance,
+            roll=roll,
+        )
 
     # ─── Actions ────────────────────────────────────────────────────────
 
@@ -378,9 +483,13 @@ class DiscordLLMBot:
         if not self.image_gen:
             await message.channel.send("Image gen isn't configured.")
             return
+        if self.config.dry_run_actions:
+            logger.info("DRY_RUN would generate image: %s", content)
+            self._record_action_audit(message, action_type="dry_run_image_gen", reason=content[:200])
+            return
 
         async with message.channel.typing():
-            refined = await self.llm_client.generate(
+            refined = await self._llm_generate(
                 f"Convert this into a detailed image generation prompt. ONLY the prompt:\n{content}",
                 system_prompt="You write image generation prompts. Be specific. Return ONLY the prompt.",
             )
@@ -403,16 +512,12 @@ class DiscordLLMBot:
         return self.bot.user.display_name if self.bot and self.bot.user else "bot"
 
     def _reset_channel_counters(self, channel_id: str):
-        import time
-        self.message_counters[channel_id] = 0
-        self.recv_message_counts[channel_id] = 0
-        self.conversation_threads.setdefault(channel_id, {"depth": 0})["depth"] += 1
-        self.last_action_time[channel_id] = time.time()
+        self.channel_states.get(channel_id).mark_bot_action()
 
     async def _send_tracked(self, channel, content: str, **kwargs) -> discord.Message:
         sent = await channel.send(content, **kwargs)
         self.feedback.register_message(str(sent.id), content)
-        self.bot_message_map[sent.id] = content
+        self.bot_message_map[str(sent.id)] = content
         return sent
 
     def _extract_image_urls(self, message: discord.Message) -> List[str]:
@@ -438,6 +543,15 @@ class DiscordLLMBot:
                 return "\n".join(lines[lines.index(line):]).strip()
         return lines[-1].strip() if lines else ""
 
+    def _strip_bot_mentions(self, content: str) -> str:
+        if not self.bot or not self.bot.user:
+            return content.strip()
+
+        cleaned = content
+        for mention in (self.bot.user.mention, f"<@!{self.bot.user.id}>"):
+            cleaned = cleaned.replace(mention, "")
+        return cleaned.strip()
+
     def _strip_name_prefix(self, text: str) -> str:
         import re
         name = self._bot_identity()
@@ -445,6 +559,266 @@ class DiscordLLMBot:
         return re.sub(pattern, "", text, flags=re.IGNORECASE).strip()
 
     # ─── Profile Learning ───────────────────────────────────────────────
+
+    def _learning_allowed(self, message: discord.Message) -> bool:
+        if isinstance(message.channel, discord.DMChannel):
+            return self.config.allow_dm_learning
+        return True
+
+    def _channel_controls(self, channel_id: str) -> dict:
+        if not self.action_audit:
+            return {
+                "learning_enabled": True,
+                "style_enabled": True,
+                "topics_enabled": True,
+                "starters_enabled": True,
+                "spontaneous_enabled": True,
+                "quiet_enabled": False,
+            }
+        return self.action_audit.get_channel_controls(channel_id)
+
+    def _enqueue_group_learning(self, channel_id: str, guild_id: Optional[str]) -> None:
+        if not self.learning_queue:
+            return
+        controls = self._channel_controls(channel_id)
+        count = self.learning_message_counts.get(channel_id, 0)
+        needs_style = (
+            self.config.style_learning_enabled
+            and controls["style_enabled"]
+            and self.style_learner
+            and self.style_learner.should_learn(count)
+        )
+        needs_topics = (
+            self.config.topic_learning_enabled
+            and controls["topics_enabled"]
+            and self.topic_learner
+            and self.topic_learner.should_learn(count)
+        )
+        if not needs_style and not needs_topics:
+            return
+        try:
+            self.learning_queue.put_nowait({
+                "channel_id": channel_id,
+                "guild_id": guild_id,
+                "style": needs_style,
+                "topics": needs_topics,
+            })
+        except asyncio.QueueFull:
+            logger.warning("Learning queue full; dropped learning job for channel_id=%s", channel_id)
+
+    async def _learning_worker(self) -> None:
+        if not self.learning_queue:
+            return
+        while True:
+            job = await self.learning_queue.get()
+            if self.config.dry_run_actions:
+                logger.info("DRY_RUN would react with %s in channel_id=%s", emoji, channel_id)
+                self._record_action_audit(message, action_type="dry_run_react", reason=emoji)
+                self._reset_channel_counters(channel_id)
+                return
+            try:
+                await self._run_group_learning_job(job)
+            except Exception:
+                logger.exception("Learning job failed")
+            finally:
+                self.learning_queue.task_done()
+
+    async def _run_group_learning_job(self, job: dict) -> None:
+        if not self.memory:
+            return
+        channel_id = job["channel_id"]
+        recent_limit = max(self.config.style_learning_context_limit, self.config.topic_learning_context_limit)
+        recent = self.memory.get_recent(
+            channel_id,
+            limit=recent_limit,
+            exclude_author_id=str(self.bot.user.id) if self.bot and self.bot.user else None,
+        )
+        if job.get("style") and self.style_learner:
+            await self.style_learner.learn_from_recent(channel_id, job.get("guild_id"), recent, self._llm_generate)
+        if job.get("topics") and self.topic_learner:
+            await self.topic_learner.learn_from_recent(channel_id, job.get("guild_id"), recent, self._llm_generate)
+
+    async def _maybe_run_group_learning(self, channel_id: str, guild_id: Optional[str]) -> None:
+        if not self.memory:
+            return
+        count = self.learning_message_counts.get(channel_id, 0)
+        recent_limit = max(self.config.style_learning_context_limit, self.config.topic_learning_context_limit)
+        recent = self.memory.get_recent(
+            channel_id,
+            limit=recent_limit,
+            exclude_author_id=str(self.bot.user.id) if self.bot and self.bot.user else None,
+        )
+        if (
+            self.config.style_learning_enabled
+            and self.style_learner
+            and self.style_learner.should_learn(count)
+        ):
+            await self.style_learner.learn_from_recent(channel_id, guild_id, recent, self._llm_generate)
+        if (
+            self.config.topic_learning_enabled
+            and self.topic_learner
+            and self.topic_learner.should_learn(count)
+        ):
+            await self.topic_learner.learn_from_recent(channel_id, guild_id, recent, self._llm_generate)
+
+    async def _maybe_start_topic(self, message: discord.Message, channel_state, idle_seconds: float) -> bool:
+        if isinstance(message.channel, discord.DMChannel):
+            return False
+        if not self.config.topic_starter_enabled or not self.topic_learner or not self.topic_log:
+            return False
+        controls = self._channel_controls(str(message.channel.id))
+        if controls["quiet_enabled"] or not controls["starters_enabled"] or not controls["topics_enabled"]:
+            self._record_action_audit(message, action_type="skip", reason="topic starters disabled by channel controls")
+            return False
+        if channel_state.received_since_action < self.config.topic_starter_min_messages_since_action:
+            self._record_action_audit(message, action_type="skip", reason="not enough messages for topic starter")
+            return False
+        if idle_seconds < self.config.topic_starter_min_idle_seconds:
+            self._record_action_audit(message, action_type="skip", reason="topic starter idle threshold not met")
+            return False
+        if channel_state.thread_depth >= 2:
+            self._record_action_audit(message, action_type="skip", reason="thread depth too high for topic starter")
+            return False
+        starter_roll = random.random()
+        if starter_roll > self.config.topic_starter_chance:
+            self._record_action_audit(
+                message,
+                action_type="skip",
+                reason="topic starter probability roll failed",
+                probability=self.config.topic_starter_chance,
+                roll=starter_roll,
+            )
+            return False
+
+        channel_id = str(message.channel.id)
+        topic = self.topic_learner.choose_starter_topic(channel_id)
+        if not topic:
+            self._record_action_audit(message, action_type="skip", reason="no eligible topic starter candidates")
+            return False
+
+        style_context = self.style_guides.get_prompt_context(channel_id) if self.style_guides else ""
+        context = self._build_context(channel_id, for_spontaneous=True)
+        prompt = (
+            "Start a natural Discord conversation based on this internal topic.\n"
+            "Do not mention that this came from a topic log.\n"
+            "Keep it short. One sentence is preferred.\n"
+            "Return only [REPLY] or [SILENT].\n\n"
+            f"Recent conversation:\n{self._context_to_text(context) or '(no recent messages)'}\n\n"
+            f"Local channel style:\n{style_context or '(none)'}\n\n"
+            f"Topic tag:\n{topic['label']}\n\n"
+            f"Topic summary:\n{topic['summary']}\n\n"
+            f"Starter angle:\n{topic['seed_prompt']}"
+        )
+        raw = await self._llm_generate(
+            prompt,
+            system_prompt=self._build_system_prompt(channel_id),
+            chat_context=context,
+        )
+        parsed = self.llm_client.parse_response(raw)
+        if parsed.action != "REPLY":
+            return False
+
+        text = self._strip_name_prefix(parsed.content)
+        if not text:
+            return False
+        if self.config.dry_run_actions:
+            topic_id = int(topic["id"])
+            self._record_action_audit(
+                message,
+                action_type="dry_run_topic_starter",
+                reason=f"would start topic {topic['label']}: {text[:120]}",
+                topic_id=topic_id,
+                probability=self.config.topic_starter_chance,
+                roll=starter_roll,
+            )
+            self._reset_channel_counters(channel_id)
+            return True
+        sent = await self._send_tracked(message.channel, text)
+        if self.memory:
+            self.memory.add_message(
+                channel_id=channel_id,
+                guild_id=str(message.guild.id) if message.guild else None,
+                author_name=self._bot_identity(),
+                author_id=str(self.bot.user.id),
+                content=text,
+            )
+        topic_id = int(topic["id"])
+        self.topic_log.mark_started(topic_id)
+        self.bot_topic_map[str(sent.id)] = topic_id
+        self.channel_topic_starters[channel_id] = {
+            "topic_id": topic_id,
+            "message_id": sent.id,
+            "reply_count": 0,
+            "started_at": __import__("time").time(),
+            "marked_success": False,
+            "marked_ignored": False,
+        }
+        self._record_action_audit(
+            message,
+            action_type="topic_starter",
+            reason=f"selected topic {topic['label']}",
+            topic_id=topic_id,
+            probability=self.config.topic_starter_chance,
+            roll=starter_roll,
+            message_id=str(sent.id),
+        )
+        self._reset_channel_counters(channel_id)
+        return True
+
+    def _record_topic_followup(self, channel_id: str) -> None:
+        if not self.topic_log:
+            return
+        active = self.channel_topic_starters.get(channel_id)
+        if not active or active.get("marked_success"):
+            return
+        now = __import__("time").time()
+        if now - float(active.get("started_at") or 0) > 600:
+            if not active.get("marked_ignored"):
+                self.topic_log.mark_ignored(int(active["topic_id"]))
+                active["marked_ignored"] = True
+            return
+        active["reply_count"] = int(active.get("reply_count") or 0) + 1
+        if active["reply_count"] >= 3:
+            self.topic_log.mark_success(int(active["topic_id"]))
+            active["marked_success"] = True
+
+    def _expire_topic_starters(self) -> None:
+        if not self.topic_log:
+            return
+        now = __import__("time").time()
+        for active in self.channel_topic_starters.values():
+            if active.get("marked_success") or active.get("marked_ignored"):
+                continue
+            if now - float(active.get("started_at") or 0) > 600 and int(active.get("reply_count") or 0) == 0:
+                self.topic_log.mark_ignored(int(active["topic_id"]))
+                active["marked_ignored"] = True
+
+    def _context_to_text(self, context: List[Dict[str, str]]) -> str:
+        return "\n".join(f"{item.get('role', 'user')}: {item.get('content', '')}" for item in context)
+
+    def _record_action_audit(
+        self,
+        message: discord.Message,
+        *,
+        action_type: str,
+        reason: str = "",
+        topic_id: Optional[int] = None,
+        probability: Optional[float] = None,
+        roll: Optional[float] = None,
+        message_id: Optional[str] = None,
+    ) -> None:
+        if not self.action_audit:
+            return
+        self.action_audit.record(
+            guild_id=str(message.guild.id) if message.guild else None,
+            channel_id=str(message.channel.id),
+            action_type=action_type,
+            reason=reason,
+            topic_id=topic_id,
+            probability=probability,
+            roll=roll,
+            message_id=message_id,
+        )
 
     async def _run_profile_learning(self, channel_id: str, guild_id: str):
         if not self.profiles or not self.memory:
@@ -462,7 +836,7 @@ class DiscordLLMBot:
             "Only extract genuinely noteworthy stuff. Respond 'nothing' if none."
         )
         try:
-            result = await self.llm_client.generate(prompt, system_prompt=DEFAULT_SYSTEM_PROMPT)
+            result = await self._llm_generate(prompt, system_prompt=DEFAULT_SYSTEM_PROMPT)
             result = result.strip()
             if result.lower() == "nothing" or not result:
                 return
@@ -542,6 +916,15 @@ class DiscordLLMBot:
             return
         emoji = str(payload.emoji)
         self.feedback.add_reaction(mid, emoji, str(payload.user_id))
+        if self.topic_log and mid in self.bot_topic_map:
+            sentiment = self.feedback.store.classify_reaction(emoji) if self.feedback else "neutral"
+            if sentiment == "positive":
+                topic_id = self.bot_topic_map[mid]
+                active = self.channel_topic_starters.get(str(payload.channel_id))
+                if not active or not active.get("marked_success"):
+                    self.topic_log.mark_success(topic_id)
+                    if active:
+                        active["marked_success"] = True
         logger.debug(f"Feedback: {emoji} on message {mid}")
 
     def run(self):
@@ -564,17 +947,45 @@ class DiscordLLMBot:
 class MainCommands(commands.Cog):
     """Command handlers."""
 
-    def __init__(self, bot, llm_client, memory, feedback=None, profiles=None):
+    def __init__(
+        self,
+        bot,
+        llm_client,
+        memory,
+        feedback=None,
+        profiles=None,
+        style_guides=None,
+        topic_log=None,
+        action_audit=None,
+        config=None,
+        learning_queue=None,
+    ):
         self.bot = bot
         self.llm_client = llm_client
         self.memory = memory
         self.feedback = feedback
         self.profiles = profiles
+        self.style_guides = style_guides
+        self.topic_log = topic_log
+        self.action_audit = action_audit
+        self.config = config
+        self.learning_queue = learning_queue
         dev_ids = os.getenv("DEV_USER_IDS", "")
         self.dev_user_ids = set(x.strip() for x in dev_ids.split(",") if x.strip())
 
     def _is_dev(self, ctx) -> bool:
         return str(ctx.author.id) in self.dev_user_ids
+
+    def _format_controls(self, controls: dict) -> str:
+        labels = {
+            "learning_enabled": "learning",
+            "style_enabled": "style",
+            "topics_enabled": "topics",
+            "starters_enabled": "starters",
+            "spontaneous_enabled": "spontaneous",
+            "quiet_enabled": "quiet",
+        }
+        return ", ".join(f"{label}={'on' if controls[key] else 'off'}" for key, label in labels.items())
 
     @commands.command(name="ping")
     async def ping(self, ctx):
@@ -671,11 +1082,22 @@ class MainCommands(commands.Cog):
             return
         if action == "status":
             stats = self.feedback.get_stats() if self.feedback else {}
+            cid = str(ctx.channel.id)
+            style = self.style_guides.get_channel_style(cid) if self.style_guides else None
+            topic_count = len(self.topic_log.get_candidate_topics(cid, limit=100)) if self.topic_log else 0
+            queue_depth = self.learning_queue.qsize() if hasattr(self, "learning_queue") and self.learning_queue else 0
             msg = [
                 "**Internal Status**",
                 f"Messages tracked: {stats.get('total_tracked_messages', 0)}",
                 f"Positive: {stats.get('total_positive', 0)} | Negative: {stats.get('total_negative', 0)}",
                 f"User profiles: {len(self.profiles.get_all_profiles()) if self.profiles else 0}",
+                f"Style learning: {getattr(self.config, 'style_learning_enabled', False)}",
+                f"Topic learning: {getattr(self.config, 'topic_learning_enabled', False)}",
+                f"Topic starters: {getattr(self.config, 'topic_starter_enabled', False)} @ {getattr(self.config, 'topic_starter_chance', 0)}",
+                f"Channel style confidence: {style['confidence'] if style else 'none'}",
+                f"Channel topics: {topic_count}",
+                f"Learning queue depth: {queue_depth}",
+                f"Channel controls: {self._format_controls(self.action_audit.get_channel_controls(cid)) if self.action_audit else 'default'}",
                 f"Dev IDs: {', '.join(self.dev_user_ids) or 'none'}",
             ]
             await ctx.send("\n".join(msg))
@@ -746,6 +1168,212 @@ class MainCommands(commands.Cog):
             for i in range(0, len(msg), 1900):
                 await ctx.send(f"```\n{msg[i:i+1900]}\n```")
 
+        elif action == "style" and self.style_guides:
+            cid = str(ctx.channel.id)
+            style = self.style_guides.get_channel_style(cid)
+            if not style:
+                await ctx.send("No style guide for this channel yet.")
+                return
+            lines = [
+                "**Channel Style**",
+                f"Confidence: {style['confidence']}",
+                f"Samples: {style['sample_count']}",
+                f"Energy: {style['energy_level']}",
+                f"Summary: {style['style_summary'] or '-'}",
+            ]
+            if style["do_patterns"]:
+                lines.append("Do: " + "; ".join(style["do_patterns"]))
+            if style["avoid_patterns"]:
+                lines.append("Avoid: " + "; ".join(style["avoid_patterns"]))
+            if style["common_phrases"]:
+                lines.append("Phrases: " + "; ".join(style["common_phrases"]))
+            if style["humor_notes"]:
+                lines.append("Humor: " + style["humor_notes"])
+            await ctx.send("\n".join(lines)[:1900])
+
+        elif action == "topics" and self.topic_log:
+            cid = str(ctx.channel.id)
+            topics = self.topic_log.get_candidate_topics(cid, limit=10)
+            if not topics:
+                await ctx.send("No topics for this channel yet.")
+                return
+            lines = ["**Channel Topics**"]
+            for t in topics:
+                lines.append(
+                    f"{t['id']}: {t['label']} | score {t['score']:.2f} | "
+                    f"seen {t['seen_count']} | started {t['started_count']} | success {t['success_count']}"
+                )
+            await ctx.send("\n".join(lines)[:1900])
+
+        elif action == "dashboard":
+            cid = str(ctx.channel.id)
+            controls = self.action_audit.get_channel_controls(cid) if self.action_audit else {}
+            style = self.style_guides.get_channel_style(cid) if self.style_guides else None
+            topics = self.topic_log.get_candidate_topics(cid, limit=5) if self.topic_log else []
+            last = self.action_audit.get_last(cid) if self.action_audit else None
+            topic_summary = ", ".join(
+                f"{t['id']}:{t['label']}({t['score']:.1f})" for t in topics
+            ) or "none"
+            lines = [
+                "**Channel Dashboard**",
+                f"Controls: {self._format_controls(controls) if controls else 'default'}",
+                f"Style confidence: {style['confidence'] if style else 'none'}",
+                f"Top topics: {topic_summary}",
+                f"Learning queue: {self.learning_queue.qsize() if self.learning_queue else 0}",
+            ]
+            if last:
+                lines.append(f"Last action: {last['created_at']} {last['action_type']} - {last['reason']}")
+            await ctx.send("\n".join(lines)[:1900])
+
+        elif action == "topic" and self.topic_log:
+            parts = ctx.message.content.split()
+            if len(parts) >= 4 and parts[2] in {"boost", "mute", "unmute", "delete", "rename", "summary", "starter"}:
+                sub = parts[2]
+                try:
+                    topic_id = int(parts[3])
+                except ValueError:
+                    await ctx.send("Topic ID must be a number.")
+                    return
+                if sub == "boost":
+                    amount = 1.0
+                    if len(parts) >= 5:
+                        try:
+                            amount = float(parts[4])
+                        except ValueError:
+                            pass
+                    self.topic_log.boost_topic(topic_id, amount)
+                    await ctx.send(f"Topic {topic_id} boosted by {amount}.")
+                elif sub == "mute":
+                    self.topic_log.set_topic_muted(topic_id, True)
+                    await ctx.send(f"Topic {topic_id} muted.")
+                elif sub == "unmute":
+                    self.topic_log.set_topic_muted(topic_id, False)
+                    await ctx.send(f"Topic {topic_id} unmuted.")
+                elif sub == "delete":
+                    self.topic_log.delete_topic(topic_id)
+                    await ctx.send(f"Topic {topic_id} deleted.")
+                elif sub == "rename":
+                    text = " ".join(parts[4:]).strip()
+                    self.topic_log.update_topic(topic_id, label=text)
+                    await ctx.send(f"Topic {topic_id} renamed.")
+                elif sub == "summary":
+                    text = " ".join(parts[4:]).strip()
+                    self.topic_log.update_topic(topic_id, summary=text)
+                    await ctx.send(f"Topic {topic_id} summary updated.")
+                elif sub == "starter":
+                    text = " ".join(parts[4:]).strip()
+                    self.topic_log.update_topic(topic_id, seed_prompt=text)
+                    await ctx.send(f"Topic {topic_id} starter updated.")
+                return
+            if len(parts) < 3:
+                await ctx.send("Usage: `!admin topic <id>`")
+                return
+            try:
+                topic_id = int(parts[2])
+            except ValueError:
+                await ctx.send("Topic ID must be a number.")
+                return
+            topic = self.topic_log.get_topic(topic_id)
+            if not topic:
+                await ctx.send("No topic with that ID.")
+                return
+            lines = [
+                f"**Topic {topic['id']}: {topic['label']}**",
+                f"Score: {topic['score']:.2f}",
+                f"Seen: {topic['seen_count']} | Started: {topic['started_count']} | Success: {topic['success_count']} | Muted: {bool(topic.get('muted'))}",
+                f"Summary: {topic['summary']}",
+                f"Starter: {topic['seed_prompt']}",
+            ]
+            await ctx.send("\n".join(lines)[:1900])
+
+        elif action == "channel" and self.action_audit:
+            parts = ctx.message.content.split()
+            if len(parts) < 4:
+                controls = self.action_audit.get_channel_controls(str(ctx.channel.id))
+                await ctx.send("Channel controls: " + self._format_controls(controls))
+                return
+            control = parts[2].lower()
+            value = parts[3].lower()
+            aliases = {
+                "learning": "learning",
+                "style": "style",
+                "topics": "topics",
+                "starters": "starters",
+                "spontaneous": "spontaneous",
+                "quiet": "quiet",
+            }
+            if control not in aliases or value not in {"on", "off"}:
+                await ctx.send("Usage: `!admin channel <learning|style|topics|starters|spontaneous|quiet> <on|off>`")
+                return
+            self.action_audit.set_channel_control(str(ctx.channel.id), aliases[control], value == "on")
+            controls = self.action_audit.get_channel_controls(str(ctx.channel.id))
+            await ctx.send("Channel controls: " + self._format_controls(controls))
+
+        elif action == "learn":
+            parts = ctx.message.content.split()
+            target = parts[2] if len(parts) > 2 else "all"
+            cid = str(ctx.channel.id)
+            gid = str(ctx.guild.id) if ctx.guild else None
+            if self.learning_queue:
+                try:
+                    self.learning_queue.put_nowait({
+                        "channel_id": cid,
+                        "guild_id": gid,
+                        "style": target in {"style", "all"},
+                        "topics": target in {"topics", "all"},
+                    })
+                    await ctx.send(f"Learning job queued for `{target}`.")
+                    return
+                except asyncio.QueueFull:
+                    await ctx.send("Learning queue is full. Try again in a bit.")
+                    return
+            if target in {"style", "all"} and self.style_guides and self.memory:
+                recent = self.memory.get_recent(cid, limit=getattr(self.config, "style_learning_context_limit", 80))
+                learner = StyleGuideLearner(self.style_guides, interval=1, context_limit=getattr(self.config, "style_learning_context_limit", 80))
+                await learner.learn_from_recent(cid, gid, recent, self.llm_client.generate)
+            if target in {"topics", "all"} and self.topic_log and self.memory:
+                recent = self.memory.get_recent(cid, limit=getattr(self.config, "topic_learning_context_limit", 60))
+                learner = TopicLearner(self.topic_log, interval=1, context_limit=getattr(self.config, "topic_learning_context_limit", 60))
+                await learner.learn_from_recent(cid, gid, recent, self.llm_client.generate)
+            await ctx.send(f"Learning run completed for `{target}`.")
+
+        elif action == "lastaction" and self.action_audit:
+            rows = self.action_audit.get_recent(str(ctx.channel.id), limit=5)
+            if not rows:
+                await ctx.send("No autonomous actions logged for this channel.")
+                return
+            lines = ["**Recent Actions**"]
+            for row in rows:
+                bits = [f"{row['created_at']} {row['action_type']}"]
+                if row.get("topic_id"):
+                    bits.append(f"topic={row['topic_id']}")
+                if row.get("probability") is not None:
+                    bits.append(f"p={row['probability']:.3f}")
+                if row.get("roll") is not None:
+                    bits.append(f"roll={row['roll']:.3f}")
+                if row.get("reason"):
+                    bits.append(row["reason"])
+                lines.append(" | ".join(bits))
+            await ctx.send("\n".join(lines)[:1900])
+
+        elif action == "why" and self.action_audit:
+            last = self.action_audit.get_last(str(ctx.channel.id))
+            if not last:
+                await ctx.send("No decision logged for this channel yet.")
+                return
+            bits = [
+                f"Action: {last['action_type']}",
+                f"Reason: {last['reason'] or '-'}",
+                f"At: {last['created_at']}",
+            ]
+            if last.get("topic_id"):
+                bits.append(f"Topic: {last['topic_id']}")
+            if last.get("probability") is not None:
+                bits.append(f"Probability: {last['probability']:.3f}")
+            if last.get("roll") is not None:
+                bits.append(f"Roll: {last['roll']:.3f}")
+            await ctx.send("\n".join(bits))
+
         elif action == "clear":
             sub = ctx.message.content.split()[-1] if len(ctx.message.content.split()) > 2 else ""
             if sub == "memory" and self.memory:
@@ -755,8 +1383,239 @@ class MainCommands(commands.Cog):
                 for p in self.profiles.get_all_profiles():
                     self.profiles.delete_profile(p["user_id"])
                 await ctx.send("Profiles cleared.")
+            elif sub == "style" and self.style_guides:
+                self.style_guides.clear_channel_style(str(ctx.channel.id))
+                await ctx.send("Channel style cleared.")
+            elif sub == "topics" and self.topic_log:
+                self.topic_log.clear_channel_topics(str(ctx.channel.id))
+                await ctx.send("Channel topics cleared.")
             else:
-                await ctx.send("Usage: `!admin clear memory` or `!admin clear profiles`")
+                await ctx.send("Usage: `!admin clear memory`, `!admin clear profiles`, `!admin clear style`, or `!admin clear topics`")
+
+
+class ControlCommands(commands.Cog):
+    """Cross-server control plane for managing target server channels."""
+
+    def __init__(self, bot, config, memory=None, style_guides=None, topic_log=None, action_audit=None, learning_queue=None):
+        self.bot = bot
+        self.config = config
+        self.memory = memory
+        self.style_guides = style_guides
+        self.topic_log = topic_log
+        self.action_audit = action_audit
+        self.learning_queue = learning_queue
+
+    def _is_control_admin(self, ctx) -> bool:
+        if not self.config.control_guild_id or not self.config.control_channel_id:
+            return False
+        if not ctx.guild or str(ctx.guild.id) != self.config.control_guild_id:
+            return False
+        if str(ctx.channel.id) != self.config.control_channel_id:
+            return False
+        return str(ctx.author.id) in set(self.config.control_admin_ids)
+
+    def _resolve_target(self, alias_or_id: str) -> Optional[str]:
+        if not self.action_audit:
+            return alias_or_id if alias_or_id.isdigit() else None
+        return self.action_audit.resolve_alias(alias_or_id)
+
+    def _format_controls(self, controls: dict) -> str:
+        labels = {
+            "learning_enabled": "learning",
+            "style_enabled": "style",
+            "topics_enabled": "topics",
+            "starters_enabled": "starters",
+            "spontaneous_enabled": "spontaneous",
+            "quiet_enabled": "quiet",
+        }
+        return ", ".join(f"{label}={'on' if controls[key] else 'off'}" for key, label in labels.items())
+
+    async def _send_target_message(self, channel_id: str, text: str) -> bool:
+        channel = self.bot.get_channel(int(channel_id))
+        if not channel:
+            try:
+                channel = await self.bot.fetch_channel(int(channel_id))
+            except Exception:
+                return False
+        await channel.send(text)
+        return True
+
+    @commands.command(name="control")
+    async def control(self, ctx, action: str = "status", target: str = "", *, rest: str = ""):
+        if not self._is_control_admin(ctx):
+            return
+        if not self.action_audit:
+            await ctx.send("Control plane storage is not initialized.")
+            return
+
+        action = action.lower()
+
+        if action == "status":
+            aliases = self.action_audit.list_aliases()
+            lines = [
+                "**Control Plane**",
+                f"Target guild: {self.config.target_guild_id or 'not set'}",
+                f"Aliases: {len(aliases)}",
+            ]
+            for item in aliases[:10]:
+                lines.append(f"{item['alias']} -> {item['channel_id']}")
+            await ctx.send("\n".join(lines))
+            return
+
+        if action == "bind":
+            parts = rest.split()
+            if not target or not parts:
+                await ctx.send("Usage: `!control bind <alias> <target_channel_id>`")
+                return
+            channel_id = parts[0]
+            if not channel_id.isdigit():
+                await ctx.send("Target channel ID must be numeric.")
+                return
+            self.action_audit.bind_alias(target, channel_id, self.config.target_guild_id or None)
+            await ctx.send(f"Bound `{target.lower()}` to `{channel_id}`.")
+            return
+
+        if action == "unbind":
+            if not target:
+                await ctx.send("Usage: `!control unbind <alias>`")
+                return
+            self.action_audit.unbind_alias(target)
+            await ctx.send(f"Unbound `{target.lower()}`.")
+            return
+
+        if action == "aliases":
+            aliases = self.action_audit.list_aliases()
+            if not aliases:
+                await ctx.send("No aliases bound.")
+                return
+            lines = ["**Control Aliases**"]
+            for item in aliases:
+                lines.append(f"{item['alias']} -> {item['channel_id']}")
+            await ctx.send("\n".join(lines)[:1900])
+            return
+
+        channel_id = self._resolve_target(target)
+        if not channel_id:
+            await ctx.send("Unknown target. Use a channel ID or bind an alias first.")
+            return
+
+        if action in {"quiet", "learning", "style", "topics", "starters", "spontaneous"}:
+            value = rest.strip().lower()
+            if value not in {"on", "off"}:
+                await ctx.send(f"Usage: `!control {action} <target> <on|off>`")
+                return
+            self.action_audit.set_channel_control(channel_id, action, value == "on")
+            controls = self.action_audit.get_channel_controls(channel_id)
+            await ctx.send(f"`{target}` controls: {self._format_controls(controls)}")
+            return
+
+        if action == "dashboard":
+            controls = self.action_audit.get_channel_controls(channel_id)
+            style = self.style_guides.get_channel_style(channel_id) if self.style_guides else None
+            topics = self.topic_log.get_candidate_topics(channel_id, limit=5) if self.topic_log else []
+            last = self.action_audit.get_last(channel_id)
+            topic_summary = ", ".join(f"{t['id']}:{t['label']}({t['score']:.1f})" for t in topics) or "none"
+            lines = [
+                f"**Dashboard: {target}**",
+                f"Channel ID: {channel_id}",
+                f"Controls: {self._format_controls(controls)}",
+                f"Style confidence: {style['confidence'] if style else 'none'}",
+                f"Top topics: {topic_summary}",
+            ]
+            if last:
+                lines.append(f"Last action: {last['created_at']} {last['action_type']} - {last['reason']}")
+            await ctx.send("\n".join(lines)[:1900])
+            return
+
+        if action == "topics":
+            if not self.topic_log:
+                await ctx.send("Topic log is not initialized.")
+                return
+            topics = self.topic_log.get_candidate_topics(channel_id, limit=10)
+            if not topics:
+                await ctx.send("No topics for that target.")
+                return
+            lines = [f"**Topics: {target}**"]
+            for t in topics:
+                lines.append(
+                    f"{t['id']}: {t['label']} | score {t['score']:.2f} | "
+                    f"seen {t['seen_count']} | started {t['started_count']} | success {t['success_count']}"
+                )
+            await ctx.send("\n".join(lines)[:1900])
+            return
+
+        if action == "topic":
+            parts = rest.split(maxsplit=2)
+            if len(parts) < 2:
+                await ctx.send("Usage: `!control topic <target> <mute|unmute|boost|delete|rename|summary|starter> <id> [text]`")
+                return
+            sub = parts[0].lower()
+            try:
+                topic_id = int(parts[1])
+            except ValueError:
+                await ctx.send("Topic ID must be numeric.")
+                return
+            text = parts[2] if len(parts) > 2 else ""
+            if sub == "mute":
+                self.topic_log.set_topic_muted(topic_id, True)
+            elif sub == "unmute":
+                self.topic_log.set_topic_muted(topic_id, False)
+            elif sub == "boost":
+                self.topic_log.boost_topic(topic_id, float(text or 1.0))
+            elif sub == "delete":
+                self.topic_log.delete_topic(topic_id)
+            elif sub == "rename":
+                self.topic_log.update_topic(topic_id, label=text)
+            elif sub == "summary":
+                self.topic_log.update_topic(topic_id, summary=text)
+            elif sub == "starter":
+                self.topic_log.update_topic(topic_id, seed_prompt=text)
+            else:
+                await ctx.send("Unknown topic action.")
+                return
+            await ctx.send(f"Topic {topic_id} updated.")
+            return
+
+        if action == "learn":
+            if not self.learning_queue:
+                await ctx.send("Learning queue is not initialized.")
+                return
+            target_kind = rest.strip().lower() or "all"
+            try:
+                self.learning_queue.put_nowait({
+                    "channel_id": channel_id,
+                    "guild_id": self.config.target_guild_id or None,
+                    "style": target_kind in {"style", "all"},
+                    "topics": target_kind in {"topics", "all"},
+                })
+            except asyncio.QueueFull:
+                await ctx.send("Learning queue is full. Try again in a bit.")
+                return
+            await ctx.send(f"Queued `{target_kind}` learning for `{target}`.")
+            return
+
+        if action == "say":
+            if not rest.strip():
+                await ctx.send("Usage: `!control say <target> <message>`")
+                return
+            ok = await self._send_target_message(channel_id, rest.strip())
+            if ok:
+                self.action_audit.record(
+                    channel_id=channel_id,
+                    guild_id=self.config.target_guild_id or None,
+                    action_type="control_say",
+                    reason=f"sent by {ctx.author.id}",
+                )
+                await ctx.send("Sent.")
+            else:
+                await ctx.send("Could not find or send to that target channel.")
+            return
+
+        await ctx.send(
+            "Usage: `!control status`, `bind`, `aliases`, `dashboard <target>`, "
+            "`quiet|learning|style|topics|starters|spontaneous <target> on|off`, "
+            "`topics <target>`, `topic <target> ...`, `learn <target> [style|topics|all]`, `say <target> <message>`"
+        )
 
 
 if __name__ == "__main__":

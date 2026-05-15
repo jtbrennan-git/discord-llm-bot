@@ -123,6 +123,7 @@ EOF
 *.csv
 *.tsv
 *.txt
+!requirements.txt
 *.md
 *.rst
 *.xml

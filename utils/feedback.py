@@ -6,6 +6,7 @@ Tracks reactions to bot messages and stores lessons for self-improvement.
 import sqlite3
 import os
 import logging
+from contextlib import closing
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
 from datetime import datetime
@@ -46,7 +47,7 @@ class FeedbackStore:
 
     def _init_db(self):
         """Create tables if they don't exist."""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS feedback (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -78,6 +79,10 @@ class FeedbackStore:
                 CREATE INDEX IF NOT EXISTS idx_feedback_sentiment
                 ON feedback(sentiment)
             """)
+            conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_feedback_unique_reaction
+                ON feedback(message_id, author_id, reaction)
+            """)
             conn.commit()
 
     def classify_reaction(self, reaction: str) -> str:
@@ -97,9 +102,9 @@ class FeedbackStore:
                      bot_message: str, reaction: str):
         """Store a reaction as feedback."""
         sentiment = self.classify_reaction(reaction)
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             conn.execute(
-                """INSERT INTO feedback 
+                """INSERT OR IGNORE INTO feedback
                    (message_id, channel_id, author_id, author_name, bot_message, reaction, sentiment)
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (message_id, channel_id, author_id, author_name, bot_message, reaction, sentiment)
@@ -120,7 +125,7 @@ class FeedbackStore:
 
     def get_feedback_summary(self, limit: int = 50) -> List[dict]:
         """Get recent feedback grouped by sentiment."""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             rows = conn.execute(
                 """SELECT sentiment, reaction, COUNT(*) as count,
                           GROUP_CONCAT(DISTINCT author_name) as users
@@ -134,7 +139,7 @@ class FeedbackStore:
 
     def get_negative_examples(self, limit: int = 10) -> List[Tuple[str, str]]:
         """Get bot messages that received negative feedback."""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             rows = conn.execute(
                 """SELECT bot_message, reaction
                    FROM feedback
@@ -147,7 +152,7 @@ class FeedbackStore:
 
     def get_recent_feedback_context(self, limit: int = 20) -> str:
         """Get recent feedback as a summary string for the LLM to learn from."""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             # Count by sentiment
             sentiment_counts = conn.execute(
                 """SELECT sentiment, COUNT(*) FROM feedback
@@ -192,7 +197,7 @@ class FeedbackStore:
 
     def add_lesson(self, category: str, lesson: str, confidence: float = 1.0):
         """Store a lesson the bot has learned."""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             # Check if similar lesson exists
             existing = conn.execute(
                 "SELECT id FROM lessons WHERE lesson = ? AND category = ?",
@@ -213,7 +218,7 @@ class FeedbackStore:
 
     def get_lessons(self, category: Optional[str] = None) -> List[Tuple[str, str, float]]:
         """Get stored lessons, optionally filtered by category."""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             if category:
                 rows = conn.execute(
                     "SELECT category, lesson, confidence FROM lessons WHERE category = ? ORDER BY confidence DESC",
@@ -229,7 +234,7 @@ class FeedbackStore:
         """Remove feedback older than N days."""
         from datetime import timedelta
         cutoff = datetime.utcnow() - timedelta(days=days)
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             conn.execute("DELETE FROM feedback WHERE timestamp < ?", (cutoff,))
             conn.commit()
 
@@ -239,7 +244,6 @@ class FeedbackTracker:
     tracked bot messages, reaction counting, and lesson generation."""
 
     def __init__(self, db_path: str = DB_PATH):
-        from collections import defaultdict
         self.store = FeedbackStore(db_path)
         self._tracked_messages: dict = {}  # message_id -> content
         self.lessons: list = []
@@ -262,6 +266,37 @@ class FeedbackTracker:
             bot_message=content,
             reaction=emoji,
         )
+
+    @property
+    def total_positive(self) -> int:
+        return self._count_sentiment("positive")
+
+    @property
+    def total_negative(self) -> int:
+        return self._count_sentiment("negative")
+
+    def compute_sentiment(self, message_id: str) -> float:
+        """Return positive-minus-negative score normalized by known reactions."""
+        with closing(sqlite3.connect(self.store.db_path)) as conn:
+            rows = conn.execute(
+                "SELECT sentiment, COUNT(*) FROM feedback WHERE message_id = ? GROUP BY sentiment",
+                (message_id,),
+            ).fetchall()
+        counts = {sentiment: count for sentiment, count in rows}
+        positive = counts.get("positive", 0)
+        negative = counts.get("negative", 0)
+        total = positive + negative + counts.get("neutral", 0)
+        if total == 0:
+            return 0.0
+        return (positive - negative) / total
+
+    def _count_sentiment(self, sentiment: str) -> int:
+        with closing(sqlite3.connect(self.store.db_path)) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM feedback WHERE sentiment = ?",
+                (sentiment,),
+            ).fetchone()
+        return int(row[0]) if row else 0
 
     def get_feedback_context(self) -> Optional[str]:
         """Get recent feedback as context for the LLM."""

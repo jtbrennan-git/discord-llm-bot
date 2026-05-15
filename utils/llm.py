@@ -59,7 +59,7 @@ Don't announce which register you're in. Just be in it.
 class LLMConfig:
     """Configuration for LLM client."""
     model: str = "openrouter/owl-alpha"
-    fallback_models: list = None  
+    fallback_models: Optional[List[str]] = None
     vision_model: str = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
     image_model: str = ""
     api_key: Optional[str] = None
@@ -182,22 +182,22 @@ class LLMClient:
             return ParsedResponse("SILENT", "")
         
         # [REACT: 💀]
-        m = re.match(r"^\[REACT:\s*(.+?)\]\s*(.*)", text, re.DOTALL)
+        m = re.match(r"^\[REACT:\s*(.+?)\]\s*(.*)", text, re.DOTALL | re.IGNORECASE)
         if m:
             return ParsedResponse("REACT", m.group(1).strip())
         
         # [IMAGE_GEN: prompt]
-        m = re.match(r"^\[IMAGE_GEN:\s*(.+)", text, re.DOTALL)
+        m = re.match(r"^\[IMAGE_GEN:\s*(.+)", text, re.DOTALL | re.IGNORECASE)
         if m:
             return ParsedResponse("IMAGE_GEN", m.group(1).strip())
         
         # [IMAGE_ANALYSIS] text
-        m = re.match(r"^\[IMAGE_ANALYSIS\]\s*(.+)", text, re.DOTALL)
+        m = re.match(r"^\[IMAGE_ANALYSIS\]\s*(.+)", text, re.DOTALL | re.IGNORECASE)
         if m:
             return ParsedResponse("IMAGE_ANALYSIS", m.group(1).strip())
         
         # [REPLY] text
-        m = re.match(r"^\[REPLY\]\s*(.+)", text, re.DOTALL)
+        m = re.match(r"^\[REPLY\]\s*(.+)", text, re.DOTALL | re.IGNORECASE)
         if m:
             return ParsedResponse("REPLY", m.group(1).strip())
         
