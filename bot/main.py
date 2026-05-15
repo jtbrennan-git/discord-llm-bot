@@ -61,8 +61,6 @@ class DiscordLLMBot:
     """Main bot class that handles Discord integration and LLM interactions."""
 
     BANDWAGON_MAX = 0.65  # max 65% bandwagon join chance when all members react
-    MESSAGE_TARGET = 30  # average messages between spontaneous responses
-
     # Emoji that trigger bandwagon behavior — bot copies these
     BANDWAGON_EMOJI = {"👆", "👍", "💀", "😂", "🤣", "😭", "🔥", "💯", "☝️", "🫵", "👀", "this", "real", "true", "based"}
 
@@ -444,15 +442,20 @@ class DiscordLLMBot:
         if controls["quiet_enabled"] or not controls["spontaneous_enabled"]:
             self._record_action_audit(message, action_type="skip", reason="channel quiet/spontaneous disabled")
             return
-        if channel_state.received_since_action < 15:
-            self._record_action_audit(message, action_type="skip", reason="not enough messages since action")
+        min_messages = self.config.spontaneous_min_messages_since_action
+        if channel_state.received_since_action < min_messages:
+            self._record_action_audit(
+                message,
+                action_type="skip",
+                reason=f"not enough messages since action ({channel_state.received_since_action}/{min_messages})",
+            )
             return
-        if channel_state.thread_depth >= 3:
+        if channel_state.thread_depth >= self.config.spontaneous_max_thread_depth:
             self._record_action_audit(message, action_type="skip", reason="thread depth too high")
             return
 
         counter = channel_state.message_count
-        scale = self.MESSAGE_TARGET * 1.5
+        scale = self.config.spontaneous_message_target * 1.5
         chance = min(0.8, counter / scale)
 
         # Time-based modifier: +0% (just acted) → +20% (been quiet 10+ minutes)

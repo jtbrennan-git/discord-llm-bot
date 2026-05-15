@@ -91,7 +91,7 @@ class TestProbabilityCurve:
     """Test the spontaneous message counter probability curve."""
 
     def test_probability_rises(self):
-        MESSAGE_TARGET = 30
+        MESSAGE_TARGET = 18
         BANDWAGON_MAX = 0.8
         results = []
         for n in range(1, 60):
@@ -101,8 +101,8 @@ class TestProbabilityCurve:
 
         # Should start near zero
         assert results[0] < 0.1
-        # Should hit ~50% around n=22
-        assert 0.4 < results[21] < 0.6
+        # Should hit ~50% around n=13
+        assert 0.4 < results[12] < 0.6
         # Should cap at 0.8
         assert results[-1] == 0.8
         # Should be strictly increasing until cap

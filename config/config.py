@@ -65,6 +65,9 @@ class BotConfig:
         self.style_translation_pass_enabled: bool = os.getenv("STYLE_TRANSLATION_PASS_ENABLED", "false").lower() == "true"
         self.learning_queue_maxsize: int = int(os.getenv("LEARNING_QUEUE_MAXSIZE", "25"))
         self.dry_run_actions: bool = os.getenv("DRY_RUN_ACTIONS", "false").lower() == "true"
+        self.spontaneous_min_messages_since_action: int = int(os.getenv("SPONTANEOUS_MIN_MESSAGES_SINCE_ACTION", "6"))
+        self.spontaneous_message_target: int = int(os.getenv("SPONTANEOUS_MESSAGE_TARGET", "18"))
+        self.spontaneous_max_thread_depth: int = int(os.getenv("SPONTANEOUS_MAX_THREAD_DEPTH", "4"))
 
         # Validate
         if not self.discord_token:
@@ -89,6 +92,9 @@ class BotConfig:
             "TOPIC_LEARNING_CONTEXT_LIMIT": self.topic_learning_context_limit,
             "TOPIC_STARTER_MIN_MESSAGES_SINCE_ACTION": self.topic_starter_min_messages_since_action,
             "LEARNING_QUEUE_MAXSIZE": self.learning_queue_maxsize,
+            "SPONTANEOUS_MIN_MESSAGES_SINCE_ACTION": self.spontaneous_min_messages_since_action,
+            "SPONTANEOUS_MESSAGE_TARGET": self.spontaneous_message_target,
+            "SPONTANEOUS_MAX_THREAD_DEPTH": self.spontaneous_max_thread_depth,
         }
         for name, value in positive_ints.items():
             if value <= 0:
