@@ -7,6 +7,7 @@ Unified architecture: every response goes through a single LLM call with [TAG] o
 import os
 import sys
 import logging
+from logging.handlers import RotatingFileHandler
 import asyncio
 import threading
 import random
@@ -29,11 +30,28 @@ from utils.style_guide import StyleGuideLearner, StyleGuideStore
 from utils.topic_log import TopicLearner, TopicLogStore
 
 IMPROVEMENTS_LOG = os.getenv("IMPROVEMENTS_LOG", "/tmp/bot_improvements.log")
+BOT_LOG_PATH = os.getenv("BOT_LOG_PATH", "/tmp/fellasbot.log")
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+def configure_logging() -> None:
+    log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    handlers: List[logging.Handler] = [logging.StreamHandler()]
+    if BOT_LOG_PATH:
+        try:
+            os.makedirs(os.path.dirname(BOT_LOG_PATH) or ".", exist_ok=True)
+            handlers.append(
+                RotatingFileHandler(
+                    BOT_LOG_PATH,
+                    maxBytes=int(os.getenv("BOT_LOG_MAX_BYTES", "5242880")),
+                    backupCount=int(os.getenv("BOT_LOG_BACKUP_COUNT", "5")),
+                    encoding="utf-8",
+                )
+            )
+        except OSError:
+            pass
+    logging.basicConfig(level=logging.INFO, format=log_format, handlers=handlers)
+
+
+configure_logging()
 logger = logging.getLogger(__name__)
 
 
@@ -1811,6 +1829,17 @@ class ControlCommands(commands.Cog):
             lines.append(f"{guild_name} / {channel_name} | seen={item['count']} | last={item['last_seen']}")
         return lines
 
+    def _log_lines(self, count: int = 40) -> List[str]:
+        count = max(5, min(80, count))
+        if not BOT_LOG_PATH:
+            return ["**Persistent Logs**", "BOT_LOG_PATH is not configured."]
+        if not os.path.exists(BOT_LOG_PATH):
+            return ["**Persistent Logs**", f"No log file at {BOT_LOG_PATH} yet."]
+        with open(BOT_LOG_PATH, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()[-count:]
+        trimmed = [line.rstrip()[-300:] for line in lines if line.strip()]
+        return [f"**Persistent Logs: last {len(trimmed)}**", f"`{BOT_LOG_PATH}`"] + trimmed
+
     @commands.command(name="control")
     async def control(self, ctx, action: str = "status", target: str = "", *, rest: str = ""):
         if not self._is_control_admin(ctx):
@@ -1858,6 +1887,14 @@ class ControlCommands(commands.Cog):
 
         if action == "activity":
             await ctx.send("\n".join(self._activity_lines())[:1900])
+            return
+
+        if action == "logs":
+            try:
+                count = int(target or "40")
+            except ValueError:
+                count = 40
+            await ctx.send("\n".join(self._log_lines(count))[:1900])
             return
 
         if action == "bind":
@@ -2089,7 +2126,7 @@ class ControlCommands(commands.Cog):
             "Usage: `!control status`, `channels`, `bind`, `aliases`, `dashboard [target]`, "
             "`quiet|learning|style|topics|starters|spontaneous <target> on|off`, "
             "`topics <target>`, `topic <target> ...`, `learn <target> [style|topics|all]`, "
-            "`coverage`, `guilds`, `activity`, `seen <target>`, `say <target> <message>`, "
+            "`coverage`, `guilds`, `activity`, `logs [count]`, `seen <target>`, `say <target> <message>`, "
             "`delete <target> <message_id>`, `react <target> <message_id> <emoji>`"
         )
 

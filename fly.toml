@@ -5,6 +5,10 @@ primary_region = 'lhr'
 
 [env]
   PORT = '8080'
+  BOT_LOG_PATH = '/data/fellasbot.log'
+  BOT_LOG_MAX_BYTES = '5242880'
+  BOT_LOG_BACKUP_COUNT = '10'
+  IMPROVEMENTS_LOG = '/data/bot_improvements.log'
   MEMORY_DB_PATH = '/data/bot_memory.db'
   PROFILES_DB = '/data/bot_profiles.db'
   FEEDBACK_DB_PATH = '/data/bot_feedback.db'
@@ -12,6 +16,8 @@ primary_region = 'lhr'
   STYLE_GUIDE_DB_PATH = '/data/fellasbot_style.db'
   TOPIC_LOG_DB_PATH = '/data/fellasbot_topics.db'
   CHANNEL_STATE_DB = '/data/bot_channel_state.db'
+  HERMES_HOME = '/data/hermes'
+  HERMES_PROFILE_DIR = '/data/hermes/profiles'
 
 [mounts]
   source = 'fellasbot_data'
