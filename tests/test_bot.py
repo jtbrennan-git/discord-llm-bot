@@ -306,6 +306,35 @@ class TestResponseSending:
         self.bot._generate_and_execute.assert_not_called()
         assert "c1" not in self.bot.active_followups
 
+    @pytest.mark.asyncio
+    async def test_low_signal_followup_ends_window(self):
+        self.bot.active_followups = {
+            "c1": {
+                "message_id": "m1",
+                "content": "hello",
+                "remaining": 4,
+                "expires_at": 9999999999,
+            }
+        }
+        self.bot.channel_states = MagicMock()
+        self.bot.action_audit = None
+        self.bot._generate_and_execute = AsyncMock()
+        message = MagicMock()
+        message.channel.id = "c1"
+        message.channel.__class__ = MagicMock()
+        message.content = "ok bro"
+
+        handled = await self.bot._maybe_handle_implicit_followup(message)
+
+        assert handled is False
+        self.bot._generate_and_execute.assert_not_called()
+        assert "c1" not in self.bot.active_followups
+
+    def test_low_signal_followup_detection(self):
+        assert DiscordLLMBot._is_low_signal_followup("ok bro")
+        assert DiscordLLMBot._is_low_signal_followup("oh nvm")
+        assert not DiscordLLMBot._is_low_signal_followup("wait what do you mean")
+
 
 class TestMemoryStore:
     def setup_method(self):

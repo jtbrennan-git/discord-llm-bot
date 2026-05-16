@@ -473,6 +473,16 @@ class DiscordLLMBot:
             self.active_followups.pop(channel_id, None)
             return False
 
+        if self._is_low_signal_followup(message.content):
+            self.active_followups.pop(channel_id, None)
+            self._record_action_audit(
+                message,
+                action_type="skip",
+                reason="implicit followup ended by low-signal message",
+                message_id=str(active.get("message_id") or ""),
+            )
+            return False
+
         max_messages = max(1, self.config.followup_window_messages)
         chance = min(0.85, max(0.05, ((remaining + 1) / max_messages) ** 1.5))
         roll = random.random()
@@ -514,6 +524,45 @@ class DiscordLLMBot:
         if remaining <= 0:
             self.active_followups.pop(channel_id, None)
         return True
+
+    @staticmethod
+    def _is_low_signal_followup(content: str) -> bool:
+        normalized = re.sub(r"[^a-z0-9\s]+", "", (content or "").lower()).strip()
+        if not normalized:
+            return True
+        normalized = re.sub(r"\s+", " ", normalized)
+        low_signal = {
+            "ok",
+            "okay",
+            "k",
+            "kk",
+            "lol",
+            "lmao",
+            "haha",
+            "ha",
+            "yeah",
+            "yea",
+            "yep",
+            "nah",
+            "no",
+            "nope",
+            "sure",
+            "cool",
+            "alright",
+            "aight",
+            "bet",
+            "true",
+            "real",
+            "fair",
+            "word",
+            "ok bro",
+            "okay bro",
+            "thanks",
+            "ty",
+            "nvm",
+            "oh nvm",
+        }
+        return normalized in low_signal
 
     async def _maybe_join_conversation(self, message: discord.Message):
         """Spontaneous join with counter-based probability + time decay."""
