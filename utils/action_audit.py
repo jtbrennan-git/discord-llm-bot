@@ -46,6 +46,7 @@ class ActionAuditStore:
                     spontaneous_enabled INTEGER NOT NULL DEFAULT 1,
                     quiet_enabled INTEGER NOT NULL DEFAULT 0,
                     tracking_enabled INTEGER NOT NULL DEFAULT 1,
+                    spontaneous_rate REAL NOT NULL DEFAULT 1.0,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
                 """
@@ -57,6 +58,10 @@ class ActionAuditStore:
             if "tracking_enabled" not in columns:
                 conn.execute(
                     "ALTER TABLE channel_controls ADD COLUMN tracking_enabled INTEGER NOT NULL DEFAULT 1"
+                )
+            if "spontaneous_rate" not in columns:
+                conn.execute(
+                    "ALTER TABLE channel_controls ADD COLUMN spontaneous_rate REAL NOT NULL DEFAULT 1.0"
                 )
             conn.execute(
                 """
@@ -134,6 +139,7 @@ class ActionAuditStore:
                 "spontaneous_enabled": True,
                 "quiet_enabled": False,
                 "tracking_enabled": True,
+                "spontaneous_rate": 1.0,
             }
         data = dict(row)
         return {
@@ -144,6 +150,7 @@ class ActionAuditStore:
             "spontaneous_enabled": bool(data["spontaneous_enabled"]),
             "quiet_enabled": bool(data["quiet_enabled"]),
             "tracking_enabled": bool(data["tracking_enabled"]),
+            "spontaneous_rate": float(data["spontaneous_rate"]),
         }
 
     def set_channel_control(self, channel_id: str, control: str, enabled: bool) -> None:
@@ -171,6 +178,28 @@ class ActionAuditStore:
             conn.execute(
                 f"UPDATE channel_controls SET {column} = ?, updated_at = CURRENT_TIMESTAMP WHERE channel_id = ?",
                 (1 if enabled else 0, channel_id),
+            )
+            conn.commit()
+
+    def set_spontaneous_rate(self, channel_id: str, rate: float) -> None:
+        if rate < 0 or rate > 2:
+            raise ValueError("spontaneous rate must be between 0 and 2")
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                """
+                INSERT INTO channel_controls (channel_id)
+                VALUES (?)
+                ON CONFLICT(channel_id) DO NOTHING
+                """,
+                (channel_id,),
+            )
+            conn.execute(
+                """
+                UPDATE channel_controls
+                SET spontaneous_rate = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE channel_id = ?
+                """,
+                (rate, channel_id),
             )
             conn.commit()
 

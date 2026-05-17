@@ -581,6 +581,10 @@ class DiscordLLMBot:
         if controls["quiet_enabled"] or not controls["spontaneous_enabled"]:
             self._record_action_audit(message, action_type="skip", reason="channel quiet/spontaneous disabled")
             return
+        rate = max(0.0, min(2.0, float(controls.get("spontaneous_rate", 1.0))))
+        if rate <= 0:
+            self._record_action_audit(message, action_type="skip", reason="spontaneous rate is zero")
+            return
         min_messages = self.config.spontaneous_min_messages_since_action
         now = time.time()
         last = channel_state.last_action_time
@@ -610,6 +614,7 @@ class DiscordLLMBot:
         # Time-based modifier: +0% (just acted) -> +40% (been quiet 30+ minutes).
         time_modifier = min(0.40, (idle_seconds / 1800.0) * 0.40)
         chance = min(0.90, chance + time_modifier)
+        chance = min(0.95, chance * rate)
 
         topic_started = await self._maybe_start_topic(message, channel_state, idle_seconds)
         if topic_started:
@@ -876,6 +881,7 @@ class DiscordLLMBot:
                 "spontaneous_enabled": True,
                 "quiet_enabled": False,
                 "tracking_enabled": True,
+                "spontaneous_rate": 1.0,
             }
         return self.action_audit.get_channel_controls(channel_id)
 
@@ -1288,7 +1294,9 @@ class MainCommands(commands.Cog):
             "quiet_enabled": "quiet",
             "tracking_enabled": "tracking",
         }
-        return ", ".join(f"{label}={'on' if controls[key] else 'off'}" for key, label in labels.items())
+        parts = [f"{label}={'on' if controls[key] else 'off'}" for key, label in labels.items()]
+        parts.append(f"spont-rate={float(controls.get('spontaneous_rate', 1.0)):.2g}x")
+        return ", ".join(parts)
 
     @commands.command(name="ping")
     async def ping(self, ctx):
@@ -1770,7 +1778,9 @@ class ControlCommands(commands.Cog):
             "quiet_enabled": "quiet",
             "tracking_enabled": "tracking",
         }
-        return ", ".join(f"{label}={'on' if controls[key] else 'off'}" for key, label in labels.items())
+        parts = [f"{label}={'on' if controls[key] else 'off'}" for key, label in labels.items()]
+        parts.append(f"spont-rate={float(controls.get('spontaneous_rate', 1.0)):.2g}x")
+        return ", ".join(parts)
 
     async def _send_target_message(self, channel_id: str, text: str) -> bool:
         channel = self.bot.get_channel(int(channel_id))
@@ -2008,6 +2018,31 @@ class ControlCommands(commands.Cog):
             await ctx.send(f"`{target}` controls: {self._format_controls(controls)}")
             return
 
+        if action in {"spontaneous_rate", "spont-rate", "rate"}:
+            value = rest.strip().lower()
+            presets = {
+                "off": 0.0,
+                "none": 0.0,
+                "verylow": 0.15,
+                "very-low": 0.15,
+                "low": 0.35,
+                "medium": 0.65,
+                "normal": 1.0,
+                "high": 1.35,
+            }
+            try:
+                rate = presets[value] if value in presets else float(value.rstrip("x"))
+            except ValueError:
+                await ctx.send("Usage: `!control spontaneous_rate <target> <off|very-low|low|medium|normal|high|0..2>`")
+                return
+            if rate < 0 or rate > 2:
+                await ctx.send("Spontaneous rate must be between `0` and `2`.")
+                return
+            self.action_audit.set_spontaneous_rate(channel_id, rate)
+            controls = self.action_audit.get_channel_controls(channel_id)
+            await ctx.send(f"`{target}` controls: {self._format_controls(controls)}")
+            return
+
         if action == "dashboard":
             controls = self.action_audit.get_channel_controls(channel_id)
             style = self.style_guides.get_channel_style(channel_id) if self.style_guides else None
@@ -2185,6 +2220,7 @@ class ControlCommands(commands.Cog):
         await ctx.send(
             "Usage: `!control status`, `channels`, `bind`, `aliases`, `dashboard [target]`, "
             "`quiet|learning|style|topics|starters|spontaneous|tracking <target> on|off`, "
+            "`spontaneous_rate <target> <off|very-low|low|medium|normal|high|0..2>`, "
             "`topics <target>`, `topic <target> ...`, `learn <target> [style|topics|all]`, "
             "`coverage`, `guilds`, `activity`, `logs [count]`, `seen <target>`, `say <target> <message>`, "
             "`delete <target> <message_id>`, `react <target> <message_id> <emoji>`"

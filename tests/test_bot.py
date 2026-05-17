@@ -579,26 +579,35 @@ class TestActionAuditStore:
         assert defaults["learning_enabled"] is True
         assert defaults["quiet_enabled"] is False
         assert defaults["tracking_enabled"] is True
+        assert defaults["spontaneous_rate"] == 1.0
 
         self.store.set_channel_control("c1", "quiet", True)
         self.store.set_channel_control("c1", "starters", False)
         self.store.set_channel_control("c1", "tracking", False)
+        self.store.set_spontaneous_rate("c1", 0.35)
         controls = self.store.get_channel_controls("c1")
 
         assert controls["quiet_enabled"] is True
         assert controls["starters_enabled"] is False
         assert controls["tracking_enabled"] is False
+        assert controls["spontaneous_rate"] == 0.35
 
-    def test_channel_controls_migrates_tracking_column(self, tmp_path):
+    def test_channel_controls_migrates_added_columns(self, tmp_path):
         path = str(tmp_path / "actions.db")
         first = ActionAuditStore(path)
         with sqlite3.connect(path) as conn:
             conn.execute("ALTER TABLE channel_controls DROP COLUMN tracking_enabled")
+            conn.execute("ALTER TABLE channel_controls DROP COLUMN spontaneous_rate")
             conn.commit()
 
         migrated = ActionAuditStore(path)
 
         assert migrated.get_channel_controls("c1")["tracking_enabled"] is True
+        assert migrated.get_channel_controls("c1")["spontaneous_rate"] == 1.0
+
+    def test_spontaneous_rate_validates_range(self):
+        with pytest.raises(ValueError):
+            self.store.set_spontaneous_rate("c1", 2.1)
 
     def test_control_aliases_bind_resolve_and_unbind(self):
         self.store.bind_alias("main-general", "123", "guild")
