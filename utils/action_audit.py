@@ -45,10 +45,19 @@ class ActionAuditStore:
                     starters_enabled INTEGER NOT NULL DEFAULT 1,
                     spontaneous_enabled INTEGER NOT NULL DEFAULT 1,
                     quiet_enabled INTEGER NOT NULL DEFAULT 0,
+                    tracking_enabled INTEGER NOT NULL DEFAULT 1,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
+            columns = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(channel_controls)").fetchall()
+            }
+            if "tracking_enabled" not in columns:
+                conn.execute(
+                    "ALTER TABLE channel_controls ADD COLUMN tracking_enabled INTEGER NOT NULL DEFAULT 1"
+                )
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS control_aliases (
@@ -124,6 +133,7 @@ class ActionAuditStore:
                 "starters_enabled": True,
                 "spontaneous_enabled": True,
                 "quiet_enabled": False,
+                "tracking_enabled": True,
             }
         data = dict(row)
         return {
@@ -133,6 +143,7 @@ class ActionAuditStore:
             "starters_enabled": bool(data["starters_enabled"]),
             "spontaneous_enabled": bool(data["spontaneous_enabled"]),
             "quiet_enabled": bool(data["quiet_enabled"]),
+            "tracking_enabled": bool(data["tracking_enabled"]),
         }
 
     def set_channel_control(self, channel_id: str, control: str, enabled: bool) -> None:
@@ -143,6 +154,7 @@ class ActionAuditStore:
             "starters": "starters_enabled",
             "spontaneous": "spontaneous_enabled",
             "quiet": "quiet_enabled",
+            "tracking": "tracking_enabled",
         }
         column = allowed.get(control)
         if not column:

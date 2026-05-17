@@ -5,6 +5,7 @@ Test suite for Discord LLM Bot.
 import pytest
 import json
 import os
+import sqlite3
 import tempfile
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -577,13 +578,27 @@ class TestActionAuditStore:
         defaults = self.store.get_channel_controls("c1")
         assert defaults["learning_enabled"] is True
         assert defaults["quiet_enabled"] is False
+        assert defaults["tracking_enabled"] is True
 
         self.store.set_channel_control("c1", "quiet", True)
         self.store.set_channel_control("c1", "starters", False)
+        self.store.set_channel_control("c1", "tracking", False)
         controls = self.store.get_channel_controls("c1")
 
         assert controls["quiet_enabled"] is True
         assert controls["starters_enabled"] is False
+        assert controls["tracking_enabled"] is False
+
+    def test_channel_controls_migrates_tracking_column(self, tmp_path):
+        path = str(tmp_path / "actions.db")
+        first = ActionAuditStore(path)
+        with sqlite3.connect(path) as conn:
+            conn.execute("ALTER TABLE channel_controls DROP COLUMN tracking_enabled")
+            conn.commit()
+
+        migrated = ActionAuditStore(path)
+
+        assert migrated.get_channel_controls("c1")["tracking_enabled"] is True
 
     def test_control_aliases_bind_resolve_and_unbind(self):
         self.store.bind_alias("main-general", "123", "guild")

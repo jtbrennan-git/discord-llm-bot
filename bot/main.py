@@ -217,7 +217,9 @@ class DiscordLLMBot:
             )
         controls = self._channel_controls(channel_id)
 
-        if self.memory:
+        tracking_enabled = controls.get("tracking_enabled", True)
+
+        if self.memory and tracking_enabled:
             self.memory.add_message(
                 channel_id=channel_id,
                 guild_id=guild_id,
@@ -226,16 +228,16 @@ class DiscordLLMBot:
                 content=message.content,
             )
 
-        if self.profiles:
+        if self.profiles and tracking_enabled:
             self.profiles.upsert_user(str(message.author.id), self._server_display_name(message.author))
 
-        if self._learning_allowed(message) and controls["learning_enabled"]:
+        if tracking_enabled and self._learning_allowed(message) and controls["learning_enabled"]:
             self.learning_message_counts[channel_id] = self.learning_message_counts.get(channel_id, 0) + 1
             self._enqueue_group_learning(channel_id, str(message.guild.id) if message.guild else None)
             self._expire_topic_starters()
             self._record_topic_followup(channel_id)
 
-        if self.profiles and message.guild:
+        if self.profiles and tracking_enabled and message.guild:
             self._learning_counter += 1
             if self._learning_counter % 30 == 0:
                 await self._run_profile_learning(channel_id, str(message.guild.id))
@@ -295,7 +297,10 @@ class DiscordLLMBot:
         )
         style_context = (
             self.style_guides.get_prompt_context(channel_id)
-            if channel_id and self.style_guides and self._channel_controls(channel_id)["style_enabled"]
+            if channel_id
+            and self.style_guides
+            and self._channel_controls(channel_id)["style_enabled"]
+            and self._channel_controls(channel_id).get("tracking_enabled", True)
             else None
         )
         return build_system_prompt(
@@ -309,6 +314,8 @@ class DiscordLLMBot:
     def _build_context(self, channel_id: str, for_spontaneous: bool = False) -> List[Dict[str, str]]:
         """Build chat context using proper assistant/user roles."""
         if not self.memory:
+            return []
+        if not self._channel_controls(channel_id).get("tracking_enabled", True):
             return []
         bot_id = str(self.bot.user.id) if self.bot and self.bot.user else None
         bot_name = self._bot_identity()
@@ -868,6 +875,7 @@ class DiscordLLMBot:
                 "starters_enabled": True,
                 "spontaneous_enabled": True,
                 "quiet_enabled": False,
+                "tracking_enabled": True,
             }
         return self.action_audit.get_channel_controls(channel_id)
 
@@ -1278,6 +1286,7 @@ class MainCommands(commands.Cog):
             "starters_enabled": "starters",
             "spontaneous_enabled": "spontaneous",
             "quiet_enabled": "quiet",
+            "tracking_enabled": "tracking",
         }
         return ", ".join(f"{label}={'on' if controls[key] else 'off'}" for key, label in labels.items())
 
@@ -1595,9 +1604,10 @@ class MainCommands(commands.Cog):
                 "starters": "starters",
                 "spontaneous": "spontaneous",
                 "quiet": "quiet",
+                "tracking": "tracking",
             }
             if control not in aliases or value not in {"on", "off"}:
-                await ctx.send("Usage: `!admin channel <learning|style|topics|starters|spontaneous|quiet> <on|off>`")
+                await ctx.send("Usage: `!admin channel <learning|style|topics|starters|spontaneous|quiet|tracking> <on|off>`")
                 return
             self.action_audit.set_channel_control(str(ctx.channel.id), aliases[control], value == "on")
             controls = self.action_audit.get_channel_controls(str(ctx.channel.id))
@@ -1758,6 +1768,7 @@ class ControlCommands(commands.Cog):
             "starters_enabled": "starters",
             "spontaneous_enabled": "spontaneous",
             "quiet_enabled": "quiet",
+            "tracking_enabled": "tracking",
         }
         return ", ".join(f"{label}={'on' if controls[key] else 'off'}" for key, label in labels.items())
 
@@ -1987,7 +1998,7 @@ class ControlCommands(commands.Cog):
             await ctx.send("Unknown target. Use a channel ID, channel name, #channel mention/name, or bound alias.")
             return
 
-        if action in {"quiet", "learning", "style", "topics", "starters", "spontaneous"}:
+        if action in {"quiet", "learning", "style", "topics", "starters", "spontaneous", "tracking"}:
             value = rest.strip().lower()
             if value not in {"on", "off"}:
                 await ctx.send(f"Usage: `!control {action} <target> <on|off>`")
@@ -2173,7 +2184,7 @@ class ControlCommands(commands.Cog):
 
         await ctx.send(
             "Usage: `!control status`, `channels`, `bind`, `aliases`, `dashboard [target]`, "
-            "`quiet|learning|style|topics|starters|spontaneous <target> on|off`, "
+            "`quiet|learning|style|topics|starters|spontaneous|tracking <target> on|off`, "
             "`topics <target>`, `topic <target> ...`, `learn <target> [style|topics|all]`, "
             "`coverage`, `guilds`, `activity`, `logs [count]`, `seen <target>`, `say <target> <message>`, "
             "`delete <target> <message_id>`, `react <target> <message_id> <emoji>`"
