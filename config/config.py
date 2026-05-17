@@ -70,6 +70,8 @@ class BotConfig:
         self.spontaneous_max_thread_depth: int = int(os.getenv("SPONTANEOUS_MAX_THREAD_DEPTH", "4"))
         self.spontaneous_idle_trigger_seconds: int = int(os.getenv("SPONTANEOUS_IDLE_TRIGGER_SECONDS", "1800"))
         self.spontaneous_idle_min_messages: int = int(os.getenv("SPONTANEOUS_IDLE_MIN_MESSAGES", "2"))
+        self.spontaneous_chance_cap: float = float(os.getenv("SPONTANEOUS_CHANCE_CAP", "0.30"))
+        self.spontaneous_idle_ramp_seconds: int = int(os.getenv("SPONTANEOUS_IDLE_RAMP_SECONDS", "7200"))
         self.followup_window_messages: int = int(os.getenv("FOLLOWUP_WINDOW_MESSAGES", "4"))
         self.followup_window_seconds: int = int(os.getenv("FOLLOWUP_WINDOW_SECONDS", "300"))
 
@@ -89,6 +91,9 @@ class BotConfig:
         if not 0.0 <= self.topic_starter_chance <= 1.0:
             raise ValueError("TOPIC_STARTER_CHANCE must be between 0.0 and 1.0")
 
+        if not 0.0 <= self.spontaneous_chance_cap <= 1.0:
+            raise ValueError("SPONTANEOUS_CHANCE_CAP must be between 0.0 and 1.0")
+
         positive_ints = {
             "STYLE_LEARNING_INTERVAL": self.style_learning_interval,
             "STYLE_LEARNING_CONTEXT_LIMIT": self.style_learning_context_limit,
@@ -101,6 +106,7 @@ class BotConfig:
             "SPONTANEOUS_MAX_THREAD_DEPTH": self.spontaneous_max_thread_depth,
             "SPONTANEOUS_IDLE_TRIGGER_SECONDS": self.spontaneous_idle_trigger_seconds,
             "SPONTANEOUS_IDLE_MIN_MESSAGES": self.spontaneous_idle_min_messages,
+            "SPONTANEOUS_IDLE_RAMP_SECONDS": self.spontaneous_idle_ramp_seconds,
             "FOLLOWUP_WINDOW_MESSAGES": self.followup_window_messages,
             "FOLLOWUP_WINDOW_SECONDS": self.followup_window_seconds,
         }

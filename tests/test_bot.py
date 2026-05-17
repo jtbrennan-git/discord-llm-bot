@@ -98,22 +98,21 @@ class TestProbabilityCurve:
 
     def test_probability_rises(self):
         MESSAGE_TARGET = 18
-        BANDWAGON_MAX = 0.8
+        CHANCE_CAP = 0.30
         results = []
         for n in range(1, 60):
             scale = MESSAGE_TARGET * 1.5
-            chance = min(0.8, n / scale)
+            chance = min(CHANCE_CAP, n / scale)
             results.append(chance)
 
         # Should start near zero
         assert results[0] < 0.1
-        # Should hit ~50% around n=13
-        assert 0.4 < results[12] < 0.6
-        # Should cap at 0.8
-        assert results[-1] == 0.8
+        # Should hit the configured 30% cap around n=9
+        assert results[8] == CHANCE_CAP
+        assert results[-1] == CHANCE_CAP
         # Should be strictly increasing until cap
         for i in range(len(results) - 1):
-            if results[i] < 0.8:
+            if results[i] < CHANCE_CAP:
                 assert results[i + 1] >= results[i]
 
 

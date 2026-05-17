@@ -609,12 +609,15 @@ class DiscordLLMBot:
 
         counter = channel_state.message_count
         scale = self.config.spontaneous_message_target * 1.5
-        chance = min(0.8, counter / scale)
+        chance_cap = max(0.0, min(1.0, self.config.spontaneous_chance_cap))
+        chance = min(chance_cap, counter / scale)
 
-        # Time-based modifier: +0% (just acted) -> +40% (been quiet 30+ minutes).
-        time_modifier = min(0.40, (idle_seconds / 1800.0) * 0.40)
-        chance = min(0.90, chance + time_modifier)
-        chance = min(0.95, chance * rate)
+        # Time-based modifier ramps to the same cap over the configured idle window.
+        time_modifier = min(
+            chance_cap,
+            (idle_seconds / self.config.spontaneous_idle_ramp_seconds) * chance_cap,
+        )
+        chance = min(chance_cap, (chance + time_modifier) * rate)
 
         topic_started = await self._maybe_start_topic(message, channel_state, idle_seconds)
         if topic_started:
