@@ -1,8 +1,8 @@
-# Fellasbot Hermes + Group Fit Learning Spec
+# Discord LLM Bot Hermes + Group Fit Learning Spec
 
 ## Overview
 
-Fellasbot runs as a Python Discord orchestrator plus Hermes Agent as a subprocess.
+Discord LLM Bot runs as a Python Discord orchestrator plus Hermes Agent as a subprocess.
 
 The orchestrator owns Discord connectivity, permissions, deterministic commands, state, memory, feedback, style learning, topic learning, and action execution. Hermes is the black-box language brain: it receives a prompt and returns one tagged response.
 
@@ -42,7 +42,7 @@ on_message
        local style guide
        topic starter, if selected
        safety instructions
-  -> hermes --profile fellasbot ... chat -q "<prompt>"
+  -> hermes --profile discord-llm-bot ... chat -q "<prompt>"
   -> parse HermesResponse
   -> execute response
 ```
@@ -90,7 +90,7 @@ discord-llm-bot/
 │   ├── style_guide.py   # new
 │   └── topic_log.py     # new
 └── docs/
-    └── fellasbot-hermes-group-fit.spec
+    └── discord-llm-bot-hermes-group-fit.spec
 ```
 
 If the codebase keeps the current single-file command layout in `bot/main.py`, the same behavior can be implemented there first and split into `bot/commands.py` later.
@@ -124,7 +124,7 @@ In `DiscordLLMBot.on_message`:
 5. Upsert user profile metadata.
 6. Periodically run profile, style, and topic learners.
 7. Process deterministic commands without Hermes.
-8. If mention, DM, reply-to-bot, or allowed admin path, call Hermes.
+8. If mention or reply-to-bot, or allowed admin path, call Hermes.
 9. Otherwise evaluate autonomous behavior.
 
 ### Hermes Prompt Build
@@ -132,7 +132,7 @@ In `DiscordLLMBot.on_message`:
 Replace a plain prompt builder with an orchestrator prompt builder:
 
 ```text
-You are fellasbot, a Discord bot in a friend group server.
+You are discord-llm-bot, a Discord bot in a friend group server.
 
 Recent conversation:
 <recent channel context>
@@ -159,7 +159,7 @@ Rules:
 The orchestrator passes this prompt to:
 
 ```text
-hermes --profile fellasbot --toolsets <toolset> chat -q "<prompt>"
+hermes --profile discord-llm-bot --toolsets <toolset> chat -q "<prompt>"
 ```
 
 ## Feature 1: Channel Style Guide
@@ -177,13 +177,13 @@ Create `utils/style_guide.py`.
 Use SQLite. Default path:
 
 ```text
-STYLE_GUIDE_DB_PATH=/data/fellasbot_style.db
+STYLE_GUIDE_DB_PATH=/data/discord_llm_bot_style.db
 ```
 
 Fallback for local development:
 
 ```text
-/tmp/fellasbot_style.db
+/tmp/discord_llm_bot_style.db
 ```
 
 Schema:
@@ -289,13 +289,13 @@ Create `utils/topic_log.py`.
 Use SQLite. Default path:
 
 ```text
-TOPIC_LOG_DB_PATH=/data/fellasbot_topics.db
+TOPIC_LOG_DB_PATH=/data/discord_llm_bot_topics.db
 ```
 
 Fallback:
 
 ```text
-/tmp/fellasbot_topics.db
+/tmp/discord_llm_bot_topics.db
 ```
 
 Schema:
@@ -532,8 +532,8 @@ Max lengths before SQLite write:
 Add to `BotConfig` and `.env.example`:
 
 ```text
-STYLE_GUIDE_DB_PATH=/data/fellasbot_style.db
-TOPIC_LOG_DB_PATH=/data/fellasbot_topics.db
+STYLE_GUIDE_DB_PATH=/data/discord_llm_bot_style.db
+TOPIC_LOG_DB_PATH=/data/discord_llm_bot_topics.db
 STYLE_LEARNING_ENABLED=true
 STYLE_LEARNING_INTERVAL=50
 STYLE_LEARNING_CONTEXT_LIMIT=80

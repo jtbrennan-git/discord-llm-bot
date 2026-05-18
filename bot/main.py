@@ -30,7 +30,7 @@ from utils.style_guide import StyleGuideLearner, StyleGuideStore
 from utils.topic_log import TopicLearner, TopicLogStore
 
 IMPROVEMENTS_LOG = os.getenv("IMPROVEMENTS_LOG", "/tmp/bot_improvements.log")
-BOT_LOG_PATH = os.getenv("BOT_LOG_PATH", "/tmp/fellasbot.log")
+BOT_LOG_PATH = os.getenv("BOT_LOG_PATH", "/tmp/discord_llm_bot.log")
 
 def configure_logging() -> None:
     log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -203,6 +203,9 @@ class DiscordLLMBot:
             return
         if not message.guild:
             return
+        if self._is_command_message(message.content):
+            await self.bot.process_commands(message)
+            return
 
         channel_id = str(message.channel.id)
         guild_id = str(message.guild.id)
@@ -218,8 +221,9 @@ class DiscordLLMBot:
         controls = self._channel_controls(channel_id)
 
         tracking_enabled = controls.get("tracking_enabled", True)
+        remember_enabled = self._user_remember_enabled(str(message.author.id))
 
-        if self.memory and tracking_enabled:
+        if self.memory and tracking_enabled and remember_enabled:
             self.memory.add_message(
                 channel_id=channel_id,
                 guild_id=guild_id,
@@ -228,16 +232,16 @@ class DiscordLLMBot:
                 content=message.content,
             )
 
-        if self.profiles and tracking_enabled:
+        if self.profiles and tracking_enabled and remember_enabled:
             self.profiles.upsert_user(str(message.author.id), self._server_display_name(message.author))
 
-        if tracking_enabled and self._learning_allowed(message) and controls["learning_enabled"]:
+        if tracking_enabled and remember_enabled and self._learning_allowed(message) and controls["learning_enabled"]:
             self.learning_message_counts[channel_id] = self.learning_message_counts.get(channel_id, 0) + 1
             self._enqueue_group_learning(channel_id, str(message.guild.id))
             self._expire_topic_starters()
             self._record_topic_followup(channel_id)
 
-        if self.profiles and tracking_enabled and message.guild:
+        if self.profiles and tracking_enabled and remember_enabled and message.guild:
             self._learning_counter += 1
             if self._learning_counter % 30 == 0:
                 await self._run_profile_learning(channel_id, str(message.guild.id))
@@ -310,7 +314,7 @@ class DiscordLLMBot:
         return build_system_prompt(
             bot_name=self._bot_identity(),
             base_prompt=base_prompt,
-            profiles=self.profiles,
+            profiles=self.profiles if getattr(self.config, "profile_context_enabled", False) else None,
             feedback=self.feedback,
             style_context=style_context,
         )
@@ -385,6 +389,7 @@ class DiscordLLMBot:
                                image_urls: List[str], channel_id: str) -> None:
         """Route a parsed [TAG] response to the correct action."""
         if parsed.action == "SILENT":
+            self._record_action_audit(message, action_type="silent", reason="model chose SILENT", final_action="silent")
             return
 
         elif parsed.action == "REACT":
@@ -403,11 +408,16 @@ class DiscordLLMBot:
                     guild_emoji = discord.utils.get(message.guild.emojis, name=name)
                     if guild_emoji:
                         await message.add_reaction(guild_emoji)
+                        if str(message.id) not in self.bot_message_map:
+                            self.bot_message_map[str(message.id)] = f"[reacted with {emoji}]"
+                        self._record_action_audit(message, action_type="react", reason=emoji, final_action="react")
+                        self._reset_channel_counters(channel_id)
                         return
                 await message.add_reaction("💀")
             # Track for feedback
             if str(message.id) not in self.bot_message_map:
                 self.bot_message_map[str(message.id)] = f"[reacted with {emoji}]"
+            self._record_action_audit(message, action_type="react", reason=emoji, final_action="react")
             self._reset_channel_counters(channel_id)
 
         elif parsed.action == "IMAGE_GEN":
@@ -421,6 +431,7 @@ class DiscordLLMBot:
                 return
             await self._send_tracked_response(message, parsed.content)
             await self._maybe_apply_supplemental_reaction(message, parsed.reaction, channel_id)
+            self._record_action_audit(message, action_type="image_analysis", reason=parsed.content[:200], final_action="reply")
             self._reset_channel_counters(channel_id)
 
         elif parsed.action == "REPLY":
@@ -441,6 +452,7 @@ class DiscordLLMBot:
                         content=text,
                     )
                 await self._maybe_apply_supplemental_reaction(message, parsed.reaction, channel_id)
+                self._record_action_audit(message, action_type="reply", reason=text[:200], message_id=str(sent.id), final_action="reply")
             self._reset_channel_counters(channel_id)
 
     # ─── Message Handlers ───────────────────────────────────────────────
@@ -730,6 +742,14 @@ class DiscordLLMBot:
                 candidates.append(normalized)
         return candidates or ["bot"]
 
+    def _is_command_message(self, content: str) -> bool:
+        text = (content or "").lstrip()
+        if not text:
+            return False
+        prefixes = [self.config.command_prefix] if isinstance(self.config.command_prefix, str) else list(self.config.command_prefix)
+        prefixes.append("/")
+        return any(prefix and text.startswith(prefix) for prefix in prefixes)
+
     @staticmethod
     def _normalize_name_text(text: str) -> str:
         return re.sub(r"[^a-z0-9]+", "", text.lower())
@@ -889,6 +909,7 @@ class DiscordLLMBot:
                 "quiet_enabled": False,
                 "tracking_enabled": True,
                 "spontaneous_rate": 1.0,
+                "mode": "normal",
             }
         return self.action_audit.get_channel_controls(channel_id)
 
@@ -896,6 +917,11 @@ class DiscordLLMBot:
         if not self.action_audit:
             return "normal"
         return self.action_audit.get_user_response_mode(user_id)
+
+    def _user_remember_enabled(self, user_id: str) -> bool:
+        if not self.action_audit:
+            return True
+        return bool(self.action_audit.get_user_privacy(user_id).get("remember_enabled", True))
 
     def _enqueue_group_learning(self, channel_id: str, guild_id: Optional[str]) -> None:
         if not self.learning_queue:
@@ -1126,9 +1152,12 @@ class DiscordLLMBot:
         probability: Optional[float] = None,
         roll: Optional[float] = None,
         message_id: Optional[str] = None,
+        trigger_type: Optional[str] = None,
+        final_action: Optional[str] = None,
     ) -> None:
         if not self.action_audit:
             return
+        controls = self._channel_controls(str(message.channel.id))
         self.action_audit.record(
             guild_id=str(message.guild.id) if message.guild else None,
             channel_id=str(message.channel.id),
@@ -1138,6 +1167,10 @@ class DiscordLLMBot:
             probability=probability,
             roll=roll,
             message_id=message_id,
+            trigger_type=trigger_type,
+            user_response_mode=self._user_response_mode(str(message.author.id)),
+            channel_mode=str(controls.get("mode") or "normal"),
+            final_action=final_action or action_type,
         )
 
     async def _run_profile_learning(self, channel_id: str, guild_id: str):
@@ -1236,6 +1269,7 @@ class DiscordLLMBot:
             return
         emoji = str(payload.emoji)
         self.feedback.add_reaction(mid, emoji, str(payload.user_id))
+        self.feedback.update_lessons()
         if self.topic_log and mid in self.bot_topic_map:
             sentiment = self.feedback.store.classify_reaction(emoji) if self.feedback else "neutral"
             if sentiment == "positive":
@@ -1296,6 +1330,19 @@ class MainCommands(commands.Cog):
     def _is_dev(self, ctx) -> bool:
         return str(ctx.author.id) in self.dev_user_ids
 
+    @staticmethod
+    def _display_name(user) -> str:
+        return getattr(user, "display_name", None) or getattr(user, "name", None) or str(user)
+
+    def _is_command_message(self, content: str) -> bool:
+        text = (content or "").lstrip()
+        if not text:
+            return False
+        prefix = getattr(self.config, "command_prefix", "!") if self.config else "!"
+        prefixes = [prefix] if isinstance(prefix, str) else list(prefix)
+        prefixes.append("/")
+        return any(item and text.startswith(item) for item in prefixes)
+
     def _format_controls(self, controls: dict) -> str:
         labels = {
             "learning_enabled": "learning",
@@ -1307,6 +1354,7 @@ class MainCommands(commands.Cog):
             "tracking_enabled": "tracking",
         }
         parts = [f"{label}={'on' if controls[key] else 'off'}" for key, label in labels.items()]
+        parts.insert(0, f"mode={controls.get('mode', 'normal')}")
         parts.append(f"spont-rate={float(controls.get('spontaneous_rate', 1.0)):.2g}x")
         return ", ".join(parts)
 
@@ -1323,14 +1371,17 @@ class MainCommands(commands.Cog):
                 "details": "Examples: `!help`, `!help control`, `!help feedback`.",
             },
             "control": {
-                "usage": "!control status|mute|unmute|prompted|strict|normal",
-                "summary": "Set your personal bot response preference.",
+                "usage": "!control status|mute|unmute|prompted|strict|normal|remember|forget|privacy",
+                "summary": "Set your personal bot response and memory preferences.",
                 "details": (
                     "`!control status` shows your current setting.\n"
                     "`!control mute` makes the bot respond to you only when you @mention it or use Discord reply.\n"
                     "`!control unmute` restores normal behavior.\n"
                     "`!control prompted` prevents spontaneous replies to you, but still allows name prompts.\n"
                     "`!control strict` and `!control normal` set those modes directly.\n"
+                    "`!control remember off` stops storing your future messages for memory/profile learning.\n"
+                    "`!control forget me` deletes your stored messages/profile and turns remembering off.\n"
+                    "`!control privacy` shows response and memory settings.\n"
                     "Admins also use `!control` in the control channel for channel, user, logging, delete, react, and dashboard controls."
                 ),
             },
@@ -1347,12 +1398,13 @@ class MainCommands(commands.Cog):
                     "shown here, which are used to tune future responses."
                 ),
             },
-            "learn": {
-                "usage": "!learn",
-                "summary": "Rebuild the bot's feedback lessons from collected reaction data.",
+            "highlights": {
+                "usage": "!highlights [count] [scan_limit]",
+                "summary": "Show recent funny/high-signal messages with the most reactions in this channel.",
                 "details": (
-                    "Use this after enough reactions have accumulated. It refreshes the lesson list used in the bot prompt. "
-                    "If there is not enough feedback yet, it will say so."
+                    "Scans recent visible history in the current channel, ranks messages by reaction count, "
+                    "and skips commands, bot messages, and messages that look sensitive or serious. "
+                    "`count` defaults to 5 and `scan_limit` defaults to 500."
                 ),
             },
             "improve": {
@@ -1364,11 +1416,11 @@ class MainCommands(commands.Cog):
                 ),
             },
             "admin": {
-                "usage": "!admin <status|profiles|profile|logs|memories|style|topics|dashboard|topic|channel|learn|lastaction|why|clear>",
+                "usage": "!admin <status|profiles|profile|logs|mark|labels|memories|style|topics|dashboard|topic|channel|learn|lastaction|why|clear>",
                 "summary": "Developer-only diagnostics and maintenance commands.",
                 "details": (
                     "Only configured dev users can use it. It exposes internal status, profile/style/topic diagnostics, "
-                    "channel controls, learning jobs, recent action logs, and cleanup tools."
+                    "quality labels, channel controls, learning jobs, recent action logs, and cleanup tools."
                 ),
             },
         }
@@ -1438,6 +1490,7 @@ class MainCommands(commands.Cog):
             f"**Feedback**",
             f"Positive: {stats['total_positive']} | Negative: {stats['total_negative']}",
             f"Tracked messages: {stats['total_tracked_messages']}",
+            f"Quality labels: {stats.get('quality_labels', 0)}",
         ]
         if self.feedback.lessons:
             lines.append(f"\nLessons ({len(self.feedback.lessons)}):")
@@ -1445,20 +1498,84 @@ class MainCommands(commands.Cog):
                 lines.append(f"  ▸ {l}")
         await ctx.send("\n".join(lines))
 
-    @commands.command(name="learn")
-    async def learn(self, ctx):
-        if not self.feedback:
+    @staticmethod
+    def _reaction_score(message) -> int:
+        return sum(int(getattr(reaction, "count", 0) or 0) for reaction in getattr(message, "reactions", []) or [])
+
+    @staticmethod
+    def _looks_sensitive_highlight(content: str) -> bool:
+        text = re.sub(r"\s+", " ", (content or "").lower()).strip()
+        if not text:
+            return True
+        sensitive_terms = {
+            "suicide", "kill myself", "kms", "self harm", "self-harm", "died", "death", "funeral",
+            "cancer", "hospital", "surgery", "diagnosis", "depression", "anxiety", "panic attack",
+            "abuse", "assault", "rape", "harassment", "dox", "doxx", "address", "phone number",
+            "fired", "laid off", "breakup", "divorce", "police", "court", "lawsuit", "legal",
+            "password", "token", "secret", "private", "confidential",
+        }
+        if any(term in text for term in sensitive_terms):
+            return True
+        serious_patterns = [
+            r"\b(my|our|his|her|their) (mom|dad|mother|father|brother|sister|friend|dog|cat) (died|passed away)\b",
+            r"\bnot funny\b",
+            r"\bserious(ly)?\b",
+        ]
+        return any(re.search(pattern, text) for pattern in serious_patterns)
+
+    def _highlight_candidate(self, message) -> Optional[dict]:
+        content = (getattr(message, "content", "") or "").strip()
+        if not content or self._is_command_message(content):
+            return None
+        author = getattr(message, "author", None)
+        if getattr(author, "bot", False):
+            return None
+        score = self._reaction_score(message)
+        if score <= 0 or self._looks_sensitive_highlight(content):
+            return None
+        return {
+            "message": message,
+            "score": score,
+            "content": content,
+            "author": self._display_name(author),
+        }
+
+    @commands.command(name="highlights")
+    async def highlights(self, ctx, count: int = 5, scan_limit: int = 500):
+        count = max(1, min(10, count))
+        scan_limit = max(count, min(2000, scan_limit))
+        candidates = []
+
+        try:
+            async for message in ctx.channel.history(limit=scan_limit):
+                candidate = self._highlight_candidate(message)
+                if candidate:
+                    candidates.append(candidate)
+        except discord.Forbidden:
+            await ctx.send("I can't read enough channel history here.")
             return
-        old = list(self.feedback.lessons)
-        self.feedback.update_lessons()
-        new = self.feedback.lessons
-        if not new and not old:
-            await ctx.send("Not enough data yet.")
+        except discord.HTTPException:
+            await ctx.send("Discord rejected the history lookup.")
             return
-        changes = [f"  ▸ NEW: {l}" for l in new if l not in old]
-        changes += [f"  ▸ DROPPED: {l}" for l in old if l not in new]
-        msg = "Lessons updated:\n" + "\n".join(changes) if changes else "No changes."
-        await ctx.send(msg)
+
+        if not candidates:
+            await ctx.send("No good highlights found in recent visible history.")
+            return
+
+        candidates.sort(
+            key=lambda item: (item["score"], str(getattr(item["message"], "created_at", ""))),
+            reverse=True,
+        )
+        lines = [f"**Highlights from recent #{ctx.channel.name}**"]
+        for item in candidates[:count]:
+            message = item["message"]
+            content = item["content"].replace("\n", " ")
+            if len(content) > 180:
+                content = content[:177].rstrip() + "..."
+            jump_url = getattr(message, "jump_url", "")
+            suffix = f" {jump_url}" if jump_url else ""
+            lines.append(f"- {item['score']} reacts | {item['author']}: {content}{suffix}")
+        await ctx.send("\n".join(lines)[:1900])
 
     @commands.command(name="improve")
     async def improve(self, ctx, *, suggestion: str = ""):
@@ -1557,6 +1674,33 @@ class MainCommands(commands.Cog):
                     await ctx.send(f"```\n{msg[i:i+1900]}\n```")
             except FileNotFoundError:
                 await ctx.send("No improvement log file.")
+
+        elif action == "mark" and self.feedback:
+            parts = ctx.message.content.split(maxsplit=4)
+            allowed = {"good", "bad", "too-much", "too-friendly", "missed-opportunity", "wrong-tone"}
+            if len(parts) < 4 or parts[3].lower() not in allowed:
+                await ctx.send("Usage: `!admin mark <message_id> <good|bad|too-much|too-friendly|missed-opportunity|wrong-tone> [note]`")
+                return
+            message_id = parts[2]
+            label = parts[3].lower()
+            note = parts[4] if len(parts) > 4 else ""
+            try:
+                self.feedback.add_quality_label(message_id, label, str(ctx.author.id), note)
+            except ValueError:
+                await ctx.send("Unknown quality label.")
+                return
+            await ctx.send(f"Marked `{message_id}` as `{label}`.")
+
+        elif action == "labels" and self.feedback:
+            rows = self.feedback.store.get_quality_labels(limit=10)
+            if not rows:
+                await ctx.send("No quality labels yet.")
+                return
+            lines = ["**Quality Labels**"]
+            for row in rows:
+                note = f" | {row['note']}" if row.get("note") else ""
+                lines.append(f"{row['created_at']} {row['message_id']} -> {row['label']}{note}")
+            await ctx.send("\n".join(lines)[:1900])
 
         elif action == "memories" and self.memory:
             cid = str(ctx.channel.id)
@@ -1753,6 +1897,14 @@ class MainCommands(commands.Cog):
                     bits.append(f"p={row['probability']:.3f}")
                 if row.get("roll") is not None:
                     bits.append(f"roll={row['roll']:.3f}")
+                if row.get("trigger_type"):
+                    bits.append(f"trigger={row['trigger_type']}")
+                if row.get("user_response_mode"):
+                    bits.append(f"user={row['user_response_mode']}")
+                if row.get("channel_mode"):
+                    bits.append(f"channel={row['channel_mode']}")
+                if row.get("final_action"):
+                    bits.append(f"final={row['final_action']}")
                 if row.get("reason"):
                     bits.append(row["reason"])
                 lines.append(" | ".join(bits))
@@ -1774,13 +1926,21 @@ class MainCommands(commands.Cog):
                 bits.append(f"Probability: {last['probability']:.3f}")
             if last.get("roll") is not None:
                 bits.append(f"Roll: {last['roll']:.3f}")
+            if last.get("trigger_type"):
+                bits.append(f"Trigger: {last['trigger_type']}")
+            if last.get("user_response_mode"):
+                bits.append(f"User mode: {last['user_response_mode']}")
+            if last.get("channel_mode"):
+                bits.append(f"Channel mode: {last['channel_mode']}")
+            if last.get("final_action"):
+                bits.append(f"Final action: {last['final_action']}")
             await ctx.send("\n".join(bits))
 
         elif action == "clear":
             sub = ctx.message.content.split()[-1] if len(ctx.message.content.split()) > 2 else ""
             if sub == "memory" and self.memory:
-                self.memory.cleanup_old(days=0)
-                await ctx.send("Memory wiped.")
+                deleted = self.memory.delete_channel_messages(str(ctx.channel.id))
+                await ctx.send(f"Channel memory wiped ({deleted} messages).")
             elif sub == "profiles" and self.profiles:
                 for p in self.profiles.get_all_profiles():
                     self.profiles.delete_profile(p["user_id"])
@@ -1891,7 +2051,8 @@ class ControlCommands(commands.Cog):
     def _self_control_usage(self) -> str:
         return (
             "Your controls: `!control status`, `!control mute`, `!control unmute`, "
-            "`!control prompted`, `!control strict`, or `!control normal`."
+            "`!control prompted`, `!control strict`, `!control normal`, "
+            "`!control remember on|off`, or `!control forget me`."
         )
 
     async def _handle_self_control(self, ctx, action: str, target: str = "") -> None:
@@ -1904,7 +2065,36 @@ class ControlCommands(commands.Cog):
 
         if action in {"status", "me"} and not target:
             mode = self.action_audit.get_user_response_mode(user_id)
-            await ctx.send(f"{self._self_mode_description(mode)}\n{self._self_control_usage()}")
+            privacy = self.action_audit.get_user_privacy(user_id)
+            remember = "on" if privacy.get("remember_enabled", True) else "off"
+            await ctx.send(
+                f"{self._self_mode_description(mode)}\nRemember me: `{remember}`.\n{self._self_control_usage()}"
+            )
+            return
+
+        if action == "remember":
+            value = target.strip().lower()
+            if value not in {"on", "off"}:
+                await ctx.send("Usage: `!control remember <on|off>`")
+                return
+            self.action_audit.set_user_remember_enabled(user_id, value == "on")
+            await ctx.send(f"Remember me set to `{value}`.")
+            return
+
+        if action == "privacy":
+            privacy = self.action_audit.get_user_privacy(user_id)
+            mode = self.action_audit.get_user_response_mode(user_id)
+            await ctx.send(
+                f"Response mode: `{mode}`. Remember me: `{'on' if privacy.get('remember_enabled', True) else 'off'}`."
+            )
+            return
+
+        if action == "forget" and target.strip().lower() in {"me", "myself"}:
+            deleted = self.memory.delete_user_messages(user_id) if self.memory else 0
+            if self.profiles:
+                self.profiles.delete_profile(user_id)
+            self.action_audit.set_user_remember_enabled(user_id, False)
+            await ctx.send(f"Forgot your stored messages ({deleted}) and disabled future remembering.")
             return
 
         mode = self._self_control_mode(action, target)
@@ -1926,6 +2116,7 @@ class ControlCommands(commands.Cog):
             "tracking_enabled": "tracking",
         }
         parts = [f"{label}={'on' if controls[key] else 'off'}" for key, label in labels.items()]
+        parts.insert(0, f"mode={controls.get('mode', 'normal')}")
         parts.append(f"spont-rate={float(controls.get('spontaneous_rate', 1.0)):.2g}x")
         return ", ".join(parts)
 
@@ -2168,6 +2359,16 @@ class ControlCommands(commands.Cog):
             await ctx.send(f"User `{user_id}` response mode set to `{mode}`.")
             return
 
+        if action in {"privacy", "remember"}:
+            user_id = self._resolve_user_id(target)
+            value = rest.strip().lower()
+            if not user_id or value not in {"on", "off"}:
+                await ctx.send("Usage: `!control remember <@user|user_id> <on|off>`")
+                return
+            self.action_audit.set_user_remember_enabled(user_id, value == "on")
+            await ctx.send(f"User `{user_id}` remember set to `{value}`.")
+            return
+
         if action == "dashboard" and not target:
             await ctx.send("\n".join(self._guild_dashboard_lines())[:1900])
             return
@@ -2183,6 +2384,16 @@ class ControlCommands(commands.Cog):
                 await ctx.send(f"Usage: `!control {action} <target> <on|off>`")
                 return
             self.action_audit.set_channel_control(channel_id, action, value == "on")
+            controls = self.action_audit.get_channel_controls(channel_id)
+            await ctx.send(f"`{target}` controls: {self._format_controls(controls)}")
+            return
+
+        if action in {"mode", "channel-mode", "channel_mode"}:
+            mode = rest.strip().lower()
+            if mode not in {"normal", "quiet", "observe-only", "ignore", "no-learning"}:
+                await ctx.send("Usage: `!control mode <target> <normal|quiet|observe-only|ignore|no-learning>`")
+                return
+            self.action_audit.set_channel_mode(channel_id, mode)
             controls = self.action_audit.get_channel_controls(channel_id)
             await ctx.send(f"`{target}` controls: {self._format_controls(controls)}")
             return
@@ -2389,8 +2600,9 @@ class ControlCommands(commands.Cog):
         await ctx.send(
             "Usage: `!control status`, `channels`, `bind`, `aliases`, `dashboard [target]`, "
             "`quiet|learning|style|topics|starters|spontaneous|tracking <target> on|off`, "
+            "`mode <target> <normal|quiet|observe-only|ignore|no-learning>`, "
             "`spontaneous_rate <target> <off|very-low|low|medium|normal|high|0..2>`, "
-            "`user <@user|user_id> <normal|prompted|strict>`, `users`, "
+            "`user <@user|user_id> <normal|prompted|strict>`, `remember <@user|user_id> <on|off>`, `users`, "
             "`topics <target>`, `topic <target> ...`, `learn <target> [style|topics|all]`, "
             "`coverage`, `guilds`, `activity`, `logs [count]`, `seen <target>`, `say <target> <message>`, "
             "`delete <target> <message_id>`, `react <target> <message_id> <emoji>`"

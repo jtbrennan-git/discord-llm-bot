@@ -7,7 +7,7 @@ import sqlite3
 from contextlib import closing
 from typing import Dict, List, Optional
 
-DB_PATH = os.getenv("ACTION_AUDIT_DB_PATH", "/tmp/fellasbot_actions.db")
+DB_PATH = os.getenv("ACTION_AUDIT_DB_PATH", "/tmp/discord_llm_bot_actions.db")
 
 
 class ActionAuditStore:
@@ -31,14 +31,26 @@ class ActionAuditStore:
                     probability REAL,
                     roll REAL,
                     message_id TEXT,
+                    trigger_type TEXT,
+                    user_response_mode TEXT,
+                    channel_mode TEXT,
+                    final_action TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
+            audit_columns = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(action_audit)").fetchall()
+            }
+            for column in ("trigger_type", "user_response_mode", "channel_mode", "final_action"):
+                if column not in audit_columns:
+                    conn.execute(f"ALTER TABLE action_audit ADD COLUMN {column} TEXT")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS channel_controls (
                     channel_id TEXT PRIMARY KEY,
+                    mode TEXT NOT NULL DEFAULT 'normal',
                     learning_enabled INTEGER NOT NULL DEFAULT 1,
                     style_enabled INTEGER NOT NULL DEFAULT 1,
                     topics_enabled INTEGER NOT NULL DEFAULT 1,
@@ -63,6 +75,10 @@ class ActionAuditStore:
                 conn.execute(
                     "ALTER TABLE channel_controls ADD COLUMN spontaneous_rate REAL NOT NULL DEFAULT 1.0"
                 )
+            if "mode" not in columns:
+                conn.execute(
+                    "ALTER TABLE channel_controls ADD COLUMN mode TEXT NOT NULL DEFAULT 'normal'"
+                )
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS control_aliases (
@@ -79,6 +95,15 @@ class ActionAuditStore:
                 CREATE TABLE IF NOT EXISTS user_response_controls (
                     user_id TEXT PRIMARY KEY,
                     mode TEXT NOT NULL DEFAULT 'normal',
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_privacy_controls (
+                    user_id TEXT PRIMARY KEY,
+                    remember_enabled INTEGER NOT NULL DEFAULT 1,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
                 """
@@ -102,15 +127,35 @@ class ActionAuditStore:
         probability: Optional[float] = None,
         roll: Optional[float] = None,
         message_id: Optional[str] = None,
+        trigger_type: Optional[str] = None,
+        user_response_mode: Optional[str] = None,
+        channel_mode: Optional[str] = None,
+        final_action: Optional[str] = None,
     ) -> None:
         with closing(sqlite3.connect(self.db_path)) as conn:
             conn.execute(
                 """
                 INSERT INTO action_audit
-                    (guild_id, channel_id, action_type, reason, topic_id, probability, roll, message_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (
+                        guild_id, channel_id, action_type, reason, topic_id, probability, roll, message_id,
+                        trigger_type, user_response_mode, channel_mode, final_action
+                    )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (guild_id, channel_id, action_type, reason, topic_id, probability, roll, message_id),
+                (
+                    guild_id,
+                    channel_id,
+                    action_type,
+                    reason,
+                    topic_id,
+                    probability,
+                    roll,
+                    message_id,
+                    trigger_type,
+                    user_response_mode,
+                    channel_mode,
+                    final_action,
+                ),
             )
             conn.commit()
 
@@ -149,6 +194,7 @@ class ActionAuditStore:
                 "quiet_enabled": False,
                 "tracking_enabled": True,
                 "spontaneous_rate": 1.0,
+                "mode": "normal",
             }
         data = dict(row)
         return {
@@ -160,6 +206,7 @@ class ActionAuditStore:
             "quiet_enabled": bool(data["quiet_enabled"]),
             "tracking_enabled": bool(data["tracking_enabled"]),
             "spontaneous_rate": float(data["spontaneous_rate"]),
+            "mode": data.get("mode") or "normal",
         }
 
     def set_channel_control(self, channel_id: str, control: str, enabled: bool) -> None:
@@ -209,6 +256,94 @@ class ActionAuditStore:
                 WHERE channel_id = ?
                 """,
                 (rate, channel_id),
+            )
+            conn.commit()
+
+    def set_channel_mode(self, channel_id: str, mode: str) -> None:
+        mode = mode.strip().lower()
+        if mode not in {"normal", "quiet", "observe-only", "ignore", "no-learning"}:
+            raise ValueError("channel mode must be normal, quiet, observe-only, ignore, or no-learning")
+        presets = {
+            "normal": {
+                "learning_enabled": 1,
+                "style_enabled": 1,
+                "topics_enabled": 1,
+                "starters_enabled": 1,
+                "spontaneous_enabled": 1,
+                "quiet_enabled": 0,
+                "tracking_enabled": 1,
+            },
+            "quiet": {
+                "learning_enabled": 1,
+                "style_enabled": 1,
+                "topics_enabled": 1,
+                "starters_enabled": 0,
+                "spontaneous_enabled": 0,
+                "quiet_enabled": 1,
+                "tracking_enabled": 1,
+            },
+            "observe-only": {
+                "learning_enabled": 1,
+                "style_enabled": 1,
+                "topics_enabled": 1,
+                "starters_enabled": 0,
+                "spontaneous_enabled": 0,
+                "quiet_enabled": 1,
+                "tracking_enabled": 1,
+            },
+            "ignore": {
+                "learning_enabled": 0,
+                "style_enabled": 0,
+                "topics_enabled": 0,
+                "starters_enabled": 0,
+                "spontaneous_enabled": 0,
+                "quiet_enabled": 1,
+                "tracking_enabled": 0,
+            },
+            "no-learning": {
+                "learning_enabled": 0,
+                "style_enabled": 0,
+                "topics_enabled": 0,
+                "starters_enabled": 1,
+                "spontaneous_enabled": 1,
+                "quiet_enabled": 0,
+                "tracking_enabled": 1,
+            },
+        }[mode]
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                """
+                INSERT INTO channel_controls (channel_id)
+                VALUES (?)
+                ON CONFLICT(channel_id) DO NOTHING
+                """,
+                (channel_id,),
+            )
+            conn.execute(
+                """
+                UPDATE channel_controls
+                SET mode = ?,
+                    learning_enabled = ?,
+                    style_enabled = ?,
+                    topics_enabled = ?,
+                    starters_enabled = ?,
+                    spontaneous_enabled = ?,
+                    quiet_enabled = ?,
+                    tracking_enabled = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE channel_id = ?
+                """,
+                (
+                    mode,
+                    presets["learning_enabled"],
+                    presets["style_enabled"],
+                    presets["topics_enabled"],
+                    presets["starters_enabled"],
+                    presets["spontaneous_enabled"],
+                    presets["quiet_enabled"],
+                    presets["tracking_enabled"],
+                    channel_id,
+                ),
             )
             conn.commit()
 
@@ -286,3 +421,25 @@ class ActionAuditStore:
                 "SELECT user_id, mode, updated_at FROM user_response_controls ORDER BY updated_at DESC"
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def get_user_privacy(self, user_id: str) -> Dict[str, bool]:
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            row = conn.execute(
+                "SELECT remember_enabled FROM user_privacy_controls WHERE user_id = ?",
+                (str(user_id),),
+            ).fetchone()
+        return {"remember_enabled": bool(row[0]) if row else True}
+
+    def set_user_remember_enabled(self, user_id: str, enabled: bool) -> None:
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                """
+                INSERT INTO user_privacy_controls (user_id, remember_enabled)
+                VALUES (?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    remember_enabled = excluded.remember_enabled,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (str(user_id), 1 if enabled else 0),
+            )
+            conn.commit()

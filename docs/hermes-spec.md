@@ -1,12 +1,12 @@
-# Fellasbot Spec — Orchestrator + Hermes Architecture
+# Discord LLM Bot Spec — Orchestrator + Hermes Architecture
 
 ## Overview
 
-Fellasbot is a Discord LLM bot that runs as a **Python orchestrator** (this repo) + **Hermes Agent** (subprocess). The orchestrator handles Discord connectivity, permissions, and state tracking. Hermes is only the brain — it gets text in, gives text out.
+Discord LLM Bot is a Discord LLM bot that runs as a **Python orchestrator** (this repo) + **Hermes Agent** (subprocess). The orchestrator handles Discord connectivity, permissions, and state tracking. Hermes is only the brain — it gets text in, gives text out.
 
 **Rule: NEVER modify Hermes. Treat it as a black box CLI.**
 
-Repo: `github.com/jtbrennan-git/discord-llm-bot`
+Repo: `github.com/your-org/discord-llm-bot`
 
 ## Architecture (exactly how it works)
 
@@ -31,7 +31,7 @@ Autonomous state check:
   - Decide: reply, react, spontaneous join, or silent
     ↓
 If Hermes needed:
-  spawn: hermes --profile fellasbot --toolsets WEB,image_gen chat -q "..."
+  spawn: hermes --profile discord-llm-bot --toolsets WEB,image_gen chat -q "..."
   parse response: [TAG] format
   execute: send text, react, generate image, or do nothing
 ```
@@ -49,7 +49,7 @@ discord-llm-bot/
 │   ├── __init__.py
 │   ├── client.py            # HermesClient: spawn, timeout, parse
 │   ├── setup.py             # Profile init on first run
-│   └── profile/             # Template copied to ~/.hermes/profiles/fellasbot/
+│   └── profile/             # Template copied to ~/.hermes/profiles/discord-llm-bot/
 │       └── (created at runtime by setup.py)
 ├── state/
 │   ├── __init__.py
@@ -82,7 +82,7 @@ class BotConfig:
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     llm_model: str = "openrouter/owl-alpha"
     command_prefix: str = "!"
-    allow_dms: bool = True
+    allow_dms: bool = False
     temperature: float = 0.7
     max_tokens: int = 512
     message_target: int = 30  # avg messages between spontaneous
@@ -195,7 +195,7 @@ import time
 import os
 import threading
 
-DB_PATH = os.getenv("STATE_DB_PATH", "/data/fellasbot_state.db")
+DB_PATH = os.getenv("STATE_DB_PATH", "/data/discord-llm-bot_state.db")
 
 class StateTracker:
     def __init__(self, db_path: str = DB_PATH):
@@ -312,7 +312,7 @@ class HermesClient:
 
         cmd = [
             self.binary,
-            "--profile", "fellasbot",
+            "--profile", "discord-llm-bot",
             "--toolsets", tools,
             "chat", "-q", prompt
         ]
@@ -377,7 +377,7 @@ class HermesClient:
 
 ### hermes/setup.py
 
-Creates the fellasbot profile on first run.
+Creates the discord-llm-bot profile on first run.
 
 ```python
 import os
@@ -388,30 +388,30 @@ import shutil
 logger = logging.getLogger(__name__)
 
 HERMES_HOME = os.path.expanduser("~/.hermes")
-PROFILE_DIR = os.path.join(HERMES_HOME, "profiles", "fellasbot")
+PROFILE_DIR = os.path.join(HERMES_HOME, "profiles", "discord-llm-bot")
 
-def ensure_fellasbot_profile(config):
-    """Create fellasbot Hermes profile if it doesn't exist."""
+def ensure_discord_llm_bot_profile(config):
+    """Create discord-llm-bot Hermes profile if it doesn't exist."""
     if os.path.exists(PROFILE_DIR):
-        logger.info("Fellasbot profile already exists")
+        logger.info("Discord LLM Bot profile already exists")
         return
 
     # Create profile by cloning from active profile
     result = subprocess.run(
-        ["hermes", "profile", "create", "fellasbot", "--clone"],
+        ["hermes", "profile", "create", "discord-llm-bot", "--clone"],
         capture_output=True, text=True
     )
     if result.returncode != 0:
-        logger.error(f"Failed to create fellasbot profile: {result.stderr}")
+        logger.error(f"Failed to create discord-llm-bot profile: {result.stderr}")
         return
 
     # Set model
     subprocess.run([
-        "hermes", "-p", "fellasbot", "config", "set",
+        "hermes", "-p", "discord-llm-bot", "config", "set",
         "model.provider", "openrouter"
     ], capture_output=True)
     subprocess.run([
-        "hermes", "-p", "fellasbot", "config", "set",
+        "hermes", "-p", "discord-llm-bot", "config", "set",
         "model.default", config.llm_model
     ], capture_output=True)
 
@@ -436,27 +436,27 @@ def ensure_fellasbot_profile(config):
         else:
             logger.warning("No SOUL.md found — Discord personality will be degraded")
 
-    # Install fellasbot-persona skill
-    skill_dir = os.path.join(PROFILE_DIR, "skills", "fellasbot-persona")
+    # Install discord-llm-bot-persona skill
+    skill_dir = os.path.join(PROFILE_DIR, "skills", "discord-llm-bot-persona")
     os.makedirs(skill_dir, exist_ok=True)
     skill_md = os.path.join(skill_dir, "SKILL.md")
     if not os.path.exists(skill_md):
         with open(skill_md, "w") as f:
-            f.write(FELLASBOT_PERSONA_SKILL)
+            f.write(DISCORD_BOT_PERSONA_SKILL)
 
-    logger.info("Fellasbot profile created successfully")
+    logger.info("Discord LLM Bot profile created successfully")
 
-FELLASBOT_PERSONA_SKILL = """---
-name: fellasbot-persona
-description: "Discord personality rules for fellasbot."
+DISCORD_BOT_PERSONA_SKILL = """---
+name: discord-llm-bot-persona
+description: "Discord personality rules for discord-llm-bot."
 ---
 
-# Fellasbot Discord Persona
+# Discord LLM Bot Discord Persona
 
 You are responding to Discord messages. Follow these rules:
 
 ## Identity
-- You are fellasbot. You hang out in a friend group Discord server.
+- You are discord-llm-bot. You hang out in a friend group Discord server.
 - You are NOT sarcastic, rude, or roasty. Relaxed, dry humor, friendly.
 - Max 1 emoji per message.
 - Speak like a real person in Discord, not a customer service bot.
@@ -546,7 +546,7 @@ class ImageGenerator:
 ```python
 #!/usr/bin/env python3
 """
-Fellasbot Orchestrator — Discord bot + Hermes Agent subprocess integration.
+Discord LLM Bot Orchestrator — Discord bot + Hermes Agent subprocess integration.
 """
 
 import os
@@ -567,7 +567,7 @@ from bot.permissions import PermissionLevel, get_permission_level
 from bot.commands import CommandCog
 from state.tracker import StateTracker
 from hermes.client import HermesClient, HermesResponse
-from hermes.setup import ensure_fellasbot_profile
+from hermes.setup import ensure_discord_llm_bot_profile
 from utils.image_gen import ImageGenerator
 
 logging.basicConfig(
@@ -627,7 +627,7 @@ class DiscordLLMBot:
     async def on_ready(self):
         logger.info(f"Logged in as {self.bot.user}")
         # Ensure Hermes profile exists
-        await asyncio.get_event_loop().run_in_executor(None, ensure_fellasbot_profile, self.config)
+        await asyncio.get_event_loop().run_in_executor(None, ensure_discord_llm_bot_profile, self.config)
 
     async def on_message(self, message: discord.Message):
         if message.author.bot:
@@ -643,7 +643,7 @@ class DiscordLLMBot:
         # ─── Command Handling ────────────────────────────────
         await self.bot.process_commands(message)
 
-        # ─── @mention or DM → Hermes ─────────────────────────
+        # ─── @mention → Hermes ─────────────────────────
         is_mention = self.bot.user in message.mentions
         is_dm = isinstance(message.channel, discord.DMChannel)
 
@@ -708,7 +708,7 @@ class DiscordLLMBot:
     def _build_prompt(self, content: str, context: str, permission: PermissionLevel, state: dict) -> str:
         """Build the prompt for Hermes."""
         parts = [
-            "You are fellasbot, a Discord bot in a friend group server.",
+            "You are discord-llm-bot, a Discord bot in a friend group server.",
             "",
             "Recent conversation:",
             context or "(no recent messages)",
@@ -837,7 +837,7 @@ ENTRYPOINT ["python", "-m", "bot.main"]
 ### fly.toml
 
 ```toml
-app = 'fellasbot'
+app = 'discord-llm-bot'
 primary_region = 'lhr'
 
 [env]
@@ -875,7 +875,7 @@ OPENROUTER_API_KEY=            # API key for Hermes LLM
 LLM_MODEL=openrouter/owl-alpha # Model for Hermes
 
 # Optional
-STATE_DB_PATH=/data/fellasbot_state.db
+STATE_DB_PATH=/data/discord-llm-bot_state.db
 IMPROVEMENTS_LOG=/data/improvements.log
 ```
 
@@ -888,7 +888,7 @@ flyctl secrets set \
   DISCORD_ADMIN_IDS=<ids> \
   DISCORD_APPROVED_IDS=<ids> \
   OPENROUTER_API_KEY=<key> \
-  -a fellasbot
+  -a discord-llm-bot
 ```
 
 ### Deploy
@@ -901,11 +901,11 @@ The `start_health_server` function starts HTTP server on port 8080 before the bo
 
 ## What Hermes Provides (not in this repo)
 
-Hermes is a separate installation at `~/.hermes/`. The orchestrator creates a `fellasbot` profile there on first run via `hermes profile create fellasbot --clone`. The profile's SOUL.md is the original Hermes voice. Discord personality is in the `fellasbot-persona` skill.
+Hermes is a separate installation at `~/.hermes/`. The orchestrator creates a `discord-llm-bot` profile there on first run via `hermes profile create discord-llm-bot --clone`. The profile's SOUL.md is the original Hermes voice. Discord personality is in the `discord-llm-bot-persona` skill.
 
 The orchestrator calls:
 ```
-hermes --profile fellasbot --toolsets WEB,image_gen chat -q "prompt goes here"
+hermes --profile discord-llm-bot --toolsets WEB,image_gen chat -q "prompt goes here"
 ```
 
 Hermes returns text with `[TAG]` format. The orchestrator parses and executes.

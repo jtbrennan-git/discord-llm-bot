@@ -72,6 +72,21 @@ class FeedbackStore:
                 )
             """)
             conn.execute("""
+                CREATE TABLE IF NOT EXISTS quality_labels (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    message_id TEXT NOT NULL,
+                    label TEXT NOT NULL,
+                    note TEXT NOT NULL DEFAULT '',
+                    reviewer_id TEXT NOT NULL DEFAULT '',
+                    bot_message TEXT NOT NULL DEFAULT '',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_quality_labels_message
+                ON quality_labels(message_id)
+            """)
+            conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_feedback_message
                 ON feedback(message_id)
             """)
@@ -216,6 +231,41 @@ class FeedbackStore:
                 )
             conn.commit()
 
+    def add_quality_label(
+        self,
+        message_id: str,
+        label: str,
+        note: str = "",
+        reviewer_id: str = "",
+        bot_message: str = "",
+    ) -> None:
+        label = label.strip().lower()
+        if label not in {"good", "bad", "too-much", "too-friendly", "missed-opportunity", "wrong-tone"}:
+            raise ValueError("unknown quality label")
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                """
+                INSERT INTO quality_labels (message_id, label, note, reviewer_id, bot_message)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (str(message_id), label, note.strip(), str(reviewer_id), bot_message),
+            )
+            conn.commit()
+
+    def get_quality_labels(self, limit: int = 20) -> List[dict]:
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT message_id, label, note, reviewer_id, bot_message, created_at
+                FROM quality_labels
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def get_lessons(self, category: Optional[str] = None) -> List[Tuple[str, str, float]]:
         """Get stored lessons, optionally filtered by category."""
         with closing(sqlite3.connect(self.db_path)) as conn:
@@ -267,6 +317,12 @@ class FeedbackTracker:
             reaction=emoji,
         )
 
+    def add_quality_label(self, message_id: str, label: str, reviewer_id: str, note: str = "") -> bool:
+        """Apply a manual quality label to a tracked bot message."""
+        content = self._tracked_messages.get(message_id, "")
+        self.store.add_quality_label(message_id, label, note=note, reviewer_id=reviewer_id, bot_message=content)
+        return True
+
     @property
     def total_positive(self) -> int:
         return self._count_sentiment("positive")
@@ -312,6 +368,7 @@ class FeedbackTracker:
             "total_positive": total_positive,
             "total_negative": total_negative,
             "total_tracked_messages": total_tracked,
+            "quality_labels": len(self.store.get_quality_labels(limit=1000)),
         }
 
     def load_lessons(self):

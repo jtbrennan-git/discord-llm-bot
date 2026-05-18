@@ -84,6 +84,22 @@ class MemoryStore:
             ).fetchall()
         return list(reversed(rows))
 
+    def delete_user_messages(self, author_id: str) -> int:
+        """Delete all remembered messages from a user. Returns deleted row count."""
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            cur = conn.execute("DELETE FROM messages WHERE author_id = ?", (str(author_id),))
+            deleted = cur.rowcount
+            conn.commit()
+        return deleted
+
+    def delete_channel_messages(self, channel_id: str) -> int:
+        """Delete all remembered messages from one channel. Returns deleted row count."""
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            cur = conn.execute("DELETE FROM messages WHERE channel_id = ?", (str(channel_id),))
+            deleted = cur.rowcount
+            conn.commit()
+        return deleted
+
     def get_channel_activity(self, guild_id: Optional[str] = None, limit: int = 50) -> List[Dict]:
         """Return per-channel message counts and latest seen timestamp."""
         with closing(sqlite3.connect(self.db_path)) as conn:

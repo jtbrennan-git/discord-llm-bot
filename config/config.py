@@ -32,7 +32,7 @@ class BotConfig:
         # Discord settings
         self.discord_token: str = os.getenv("DISCORD_TOKEN", "")
         self.command_prefix: str = os.getenv("COMMAND_PREFIX", "!")
-        self.allow_dms: bool = os.getenv("ALLOW_DMS", "true").lower() == "true"
+        self.allow_dms: bool = os.getenv("ALLOW_DMS", "false").lower() == "true"
         self.control_guild_id: str = os.getenv("CONTROL_GUILD_ID", "").strip()
         self.control_channel_id: str = os.getenv("CONTROL_CHANNEL_ID", "").strip()
         control_admins = os.getenv("CONTROL_ADMIN_IDS", "")
@@ -58,6 +58,7 @@ class BotConfig:
         self.topic_learning_interval: int = int(os.getenv("TOPIC_LEARNING_INTERVAL", "40"))
         self.topic_learning_context_limit: int = int(os.getenv("TOPIC_LEARNING_CONTEXT_LIMIT", "60"))
         self.topic_starter_enabled: bool = os.getenv("TOPIC_STARTER_ENABLED", "true").lower() == "true"
+        self.profile_context_enabled: bool = os.getenv("PROFILE_CONTEXT_ENABLED", "false").lower() == "true"
         self.topic_starter_min_messages_since_action: int = int(os.getenv("TOPIC_STARTER_MIN_MESSAGES_SINCE_ACTION", "25"))
         self.topic_starter_min_idle_seconds: int = int(os.getenv("TOPIC_STARTER_MIN_IDLE_SECONDS", "900"))
         self.topic_starter_cooldown_seconds: int = int(os.getenv("TOPIC_STARTER_COOLDOWN_SECONDS", "7200"))

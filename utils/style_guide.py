@@ -17,7 +17,7 @@ from utils.learning_safety import sanitize_recent_messages
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = os.getenv("STYLE_GUIDE_DB_PATH", "/tmp/fellasbot_style.db")
+DB_PATH = os.getenv("STYLE_GUIDE_DB_PATH", "/tmp/discord_llm_bot_style.db")
 
 MAX_STYLE_SUMMARY = 600
 MAX_PATTERN = 120

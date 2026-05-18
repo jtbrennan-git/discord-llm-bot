@@ -15,7 +15,7 @@ from utils.learning_safety import sanitize_recent_messages
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = os.getenv("TOPIC_LOG_DB_PATH", "/tmp/fellasbot_topics.db")
+DB_PATH = os.getenv("TOPIC_LOG_DB_PATH", "/tmp/discord_llm_bot_topics.db")
 
 MAX_LABEL = 80
 MAX_SUMMARY = 500

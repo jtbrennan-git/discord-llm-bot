@@ -21,7 +21,8 @@ from utils.learning_safety import sanitize_learning_text
 from utils.style_guide import StyleGuideStore
 from utils.topic_log import TopicLearner, TopicLogStore
 from utils.memory import MemoryStore
-from bot.main import ControlCommands, DiscordLLMBot
+from bot.main import ControlCommands, DiscordLLMBot, MainCommands
+from tests.fixtures.personality_regressions import PERSONALITY_REGRESSIONS
 
 
 # ─── LLM Parsing ────────────────────────────────────────────────────────
@@ -89,6 +90,57 @@ class TestParsedResponse:
         assert r.action == "REPLY"
         r = self.client.parse_response("[react: 👍]")
         assert r.action == "REACT"
+
+
+class TestPersonalityFixtures:
+    def test_personality_regression_fixture_is_structured(self):
+        cases = PERSONALITY_REGRESSIONS
+
+        assert len(cases) >= 3
+        for case in cases:
+            assert case["id"]
+            assert case["conversation"]
+            assert case["expected"]["preferred_action"] in {"SILENT", "REACT", "REPLY"}
+            assert "avoid" in case["expected"]
+
+
+class TestCommandHelp:
+    def test_public_learn_command_is_not_advertised(self):
+        commands = MainCommands(MagicMock(), MagicMock(), MagicMock())._command_help()
+
+        assert "learn" not in commands
+
+    def test_highlights_command_is_advertised(self):
+        commands = MainCommands(MagicMock(), MagicMock(), MagicMock())._command_help()
+
+        assert "highlights" in commands
+
+
+class TestHighlights:
+    def setup_method(self):
+        config = MagicMock()
+        config.command_prefix = "!"
+        self.commands = MainCommands(MagicMock(), MagicMock(), MagicMock(), config=config)
+
+    def _message(self, content, counts, *, bot=False):
+        message = MagicMock()
+        message.content = content
+        message.author.bot = bot
+        message.author.display_name = "Alice"
+        message.reactions = [MagicMock(count=count) for count in counts]
+        return message
+
+    def test_highlight_candidate_scores_reactions(self):
+        candidate = self.commands._highlight_candidate(self._message("that track goes hard", [2, 3]))
+
+        assert candidate["score"] == 5
+        assert candidate["content"] == "that track goes hard"
+
+    def test_highlight_candidate_skips_commands_bots_and_sensitive_topics(self):
+        assert self.commands._highlight_candidate(self._message("!help", [5])) is None
+        assert self.commands._highlight_candidate(self._message("funny", [5], bot=True)) is None
+        assert self.commands._highlight_candidate(self._message("my dad died", [10])) is None
+        assert self.commands._highlight_candidate(self._message("no reacts", [])) is None
 
 
 # ─── Probability Curve ─────────────────────────────────────────────────
@@ -185,20 +237,20 @@ class TestBotNameDetection:
     def setup_method(self):
         self.bot = object.__new__(DiscordLLMBot)
         user = MagicMock()
-        user.display_name = "fellasbot"
+        user.display_name = "testbot"
         user.global_name = None
-        user.name = "fellasbot"
+        user.name = "testbot"
         self.bot.bot = MagicMock()
         self.bot.bot.user = user
 
     def test_detects_exact_name_case_insensitive(self):
-        assert self.bot._message_names_bot("hey FELLASBOT what do you think")
+        assert self.bot._message_names_bot("hey TESTBOT what do you think")
 
     def test_detects_spaced_name(self):
-        assert self.bot._message_names_bot("fellas bot get in here")
+        assert self.bot._message_names_bot("test bot get in here")
 
     def test_detects_small_typo(self):
-        assert self.bot._message_names_bot("fellabot you seeing this")
+        assert self.bot._message_names_bot("tesbot you seeing this")
 
     def test_ignores_unrelated_text(self):
         assert not self.bot._message_names_bot("the channel is quiet today")
@@ -335,6 +387,15 @@ class TestResponseSending:
         assert DiscordLLMBot._is_low_signal_followup("oh nvm")
         assert not DiscordLLMBot._is_low_signal_followup("wait what do you mean")
 
+    def test_command_message_detection(self):
+        self.bot.config.command_prefix = "!"
+
+        assert self.bot._is_command_message("!help")
+        assert self.bot._is_command_message("   !control status")
+        assert self.bot._is_command_message("/control mute")
+        assert not self.bot._is_command_message("testbot help")
+        assert not self.bot._is_command_message("that was !weird")
+
 
 class TestMemoryStore:
     def setup_method(self):
@@ -355,6 +416,28 @@ class TestMemoryStore:
 
         assert counts["c1"] == 2
         assert counts["c2"] == 1
+
+    def test_delete_user_messages(self):
+        self.store.add_message("c1", "g1", "alice", "u1", "hello")
+        self.store.add_message("c1", "g1", "bob", "u2", "hi")
+        self.store.add_message("c2", "g1", "alice", "u1", "elsewhere")
+
+        deleted = self.store.delete_user_messages("u1")
+
+        assert deleted == 2
+        assert self.store.get_user_history("u1") == []
+        assert len(self.store.get_user_history("u2")) == 1
+
+    def test_delete_channel_messages(self):
+        self.store.add_message("c1", "g1", "alice", "u1", "hello")
+        self.store.add_message("c1", "g1", "bob", "u2", "hi")
+        self.store.add_message("c2", "g1", "alice", "u1", "elsewhere")
+
+        deleted = self.store.delete_channel_messages("c1")
+
+        assert deleted == 2
+        assert self.store.get_recent("c1") == []
+        assert len(self.store.get_recent("c2")) == 1
 
 
 class TestPromptBuilder:
@@ -573,12 +656,32 @@ class TestActionAuditStore:
         assert rows[0]["action_type"] == "topic_starter"
         assert rows[0]["topic_id"] == 12
 
+    def test_records_decision_metadata(self):
+        self.store.record(
+            guild_id="g1",
+            channel_id="c1",
+            action_type="skip",
+            reason="probability failed",
+            trigger_type="spontaneous",
+            user_response_mode="normal",
+            channel_mode="quiet",
+            final_action="silent",
+        )
+
+        row = self.store.get_last("c1")
+
+        assert row["trigger_type"] == "spontaneous"
+        assert row["user_response_mode"] == "normal"
+        assert row["channel_mode"] == "quiet"
+        assert row["final_action"] == "silent"
+
     def test_channel_controls_defaults_and_updates(self):
         defaults = self.store.get_channel_controls("c1")
         assert defaults["learning_enabled"] is True
         assert defaults["quiet_enabled"] is False
         assert defaults["tracking_enabled"] is True
         assert defaults["spontaneous_rate"] == 1.0
+        assert defaults["mode"] == "normal"
 
         self.store.set_channel_control("c1", "quiet", True)
         self.store.set_channel_control("c1", "starters", False)
@@ -591,18 +694,37 @@ class TestActionAuditStore:
         assert controls["tracking_enabled"] is False
         assert controls["spontaneous_rate"] == 0.35
 
+    def test_channel_mode_presets(self):
+        self.store.set_channel_mode("c1", "ignore")
+        controls = self.store.get_channel_controls("c1")
+
+        assert controls["mode"] == "ignore"
+        assert controls["tracking_enabled"] is False
+        assert controls["learning_enabled"] is False
+        assert controls["spontaneous_enabled"] is False
+
+        self.store.set_channel_mode("c1", "no-learning")
+        controls = self.store.get_channel_controls("c1")
+
+        assert controls["mode"] == "no-learning"
+        assert controls["tracking_enabled"] is True
+        assert controls["learning_enabled"] is False
+        assert controls["spontaneous_enabled"] is True
+
     def test_channel_controls_migrates_added_columns(self, tmp_path):
         path = str(tmp_path / "actions.db")
         first = ActionAuditStore(path)
         with sqlite3.connect(path) as conn:
             conn.execute("ALTER TABLE channel_controls DROP COLUMN tracking_enabled")
             conn.execute("ALTER TABLE channel_controls DROP COLUMN spontaneous_rate")
+            conn.execute("ALTER TABLE channel_controls DROP COLUMN mode")
             conn.commit()
 
         migrated = ActionAuditStore(path)
 
         assert migrated.get_channel_controls("c1")["tracking_enabled"] is True
         assert migrated.get_channel_controls("c1")["spontaneous_rate"] == 1.0
+        assert migrated.get_channel_controls("c1")["mode"] == "normal"
 
     def test_spontaneous_rate_validates_range(self):
         with pytest.raises(ValueError):
@@ -624,6 +746,13 @@ class TestActionAuditStore:
     def test_user_response_mode_validates(self):
         with pytest.raises(ValueError):
             self.store.set_user_response_mode("u1", "weird")
+
+    def test_user_privacy_controls(self):
+        assert self.store.get_user_privacy("u1")["remember_enabled"] is True
+
+        self.store.set_user_remember_enabled("u1", False)
+
+        assert self.store.get_user_privacy("u1")["remember_enabled"] is False
 
     def test_self_control_mode_aliases(self):
         assert ControlCommands._self_control_mode("mute") == "strict"
@@ -687,6 +816,18 @@ class TestFeedbackTracker:
 
 
 # ─── User Profile Store ────────────────────────────────────────────────
+
+    def test_quality_labels(self):
+        self.tracker.register_message("1", "too eager")
+        self.tracker.add_quality_label("1", "too-friendly", "admin", "sounds forced")
+
+        rows = self.tracker.store.get_quality_labels()
+
+        assert rows[0]["message_id"] == "1"
+        assert rows[0]["label"] == "too-friendly"
+        assert rows[0]["note"] == "sounds forced"
+        assert self.tracker.get_stats()["quality_labels"] == 1
+
 
 class TestUserProfileStore:
     """Test CRUD operations on user profiles."""
