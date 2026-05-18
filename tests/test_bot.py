@@ -21,7 +21,7 @@ from utils.learning_safety import sanitize_learning_text
 from utils.style_guide import StyleGuideStore
 from utils.topic_log import TopicLearner, TopicLogStore
 from utils.memory import MemoryStore
-from bot.main import DiscordLLMBot
+from bot.main import ControlCommands, DiscordLLMBot
 
 
 # ─── LLM Parsing ────────────────────────────────────────────────────────
@@ -624,6 +624,14 @@ class TestActionAuditStore:
     def test_user_response_mode_validates(self):
         with pytest.raises(ValueError):
             self.store.set_user_response_mode("u1", "weird")
+
+    def test_self_control_mode_aliases(self):
+        assert ControlCommands._self_control_mode("mute") == "strict"
+        assert ControlCommands._self_control_mode("unmute") == "normal"
+        assert ControlCommands._self_control_mode("prompted") == "prompted"
+        assert ControlCommands._self_control_mode("strict") == "strict"
+        assert ControlCommands._self_control_mode("me", "normal") == "normal"
+        assert ControlCommands._self_control_mode("me", "weird") is None
 
     def test_control_aliases_bind_resolve_and_unbind(self):
         self.store.bind_alias("main-general", "123", "guild")

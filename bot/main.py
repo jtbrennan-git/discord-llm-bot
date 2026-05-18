@@ -1338,6 +1338,9 @@ class MainCommands(commands.Cog):
         embed.add_field(name="Commands", value=(
             "`!ping` - Check if I'm alive\n"
             "`!help` - Show this message\n"
+            "`!control status` - Show your bot response setting\n"
+            "`!control mute` - Only respond to your @mentions or Discord replies\n"
+            "`!control unmute` - Restore normal responses to you\n"
             "`!whoami` - Ask me who I am\n"
             "`!feedback` - Show reaction feedback stats\n"
             "`!learn` - Force re-analyze feedback lessons\n"
@@ -1791,6 +1794,56 @@ class ControlCommands(commands.Cog):
             value = value[2:-1].lstrip("!")
         return value if value.isdigit() else None
 
+    @staticmethod
+    def _self_control_mode(action: str, target: str = "") -> Optional[str]:
+        action = (action or "").strip().lower()
+        target = (target or "").strip().lower()
+        if action == "mute":
+            return "strict"
+        if action == "unmute":
+            return "normal"
+        if action in {"normal", "prompted", "strict"}:
+            return action
+        if action == "me" and target in {"normal", "prompted", "strict"}:
+            return target
+        return None
+
+    @staticmethod
+    def _self_mode_description(mode: str) -> str:
+        descriptions = {
+            "normal": "Normal: I can respond to your messages under the server's current settings.",
+            "prompted": "Prompted: I will not jump into your messages unless you prompt me, including by name.",
+            "strict": "Muted: I will only respond to your @mentions or Discord replies to me.",
+        }
+        return descriptions.get(mode, descriptions["normal"])
+
+    def _self_control_usage(self) -> str:
+        return (
+            "Your controls: `!control status`, `!control mute`, `!control unmute`, "
+            "`!control prompted`, `!control strict`, or `!control normal`."
+        )
+
+    async def _handle_self_control(self, ctx, action: str, target: str = "") -> None:
+        if not self.action_audit:
+            await ctx.send("Control settings are not initialized.")
+            return
+
+        action = (action or "status").strip().lower()
+        user_id = str(ctx.author.id)
+
+        if action in {"status", "me"} and not target:
+            mode = self.action_audit.get_user_response_mode(user_id)
+            await ctx.send(f"{self._self_mode_description(mode)}\n{self._self_control_usage()}")
+            return
+
+        mode = self._self_control_mode(action, target)
+        if not mode:
+            await ctx.send(self._self_control_usage())
+            return
+
+        self.action_audit.set_user_response_mode(user_id, mode)
+        await ctx.send(f"Set your bot response mode. {self._self_mode_description(mode)}")
+
     def _format_controls(self, controls: dict) -> str:
         labels = {
             "learning_enabled": "learning",
@@ -1936,6 +1989,7 @@ class ControlCommands(commands.Cog):
     @commands.command(name="control")
     async def control(self, ctx, action: str = "status", target: str = "", *, rest: str = ""):
         if not self._is_control_admin(ctx):
+            await self._handle_self_control(ctx, action, target)
             return
         if not self.action_audit:
             await ctx.send("Control plane storage is not initialized.")
