@@ -76,6 +76,15 @@ class ActionAuditStore:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS user_response_controls (
+                    user_id TEXT PRIMARY KEY,
+                    mode TEXT NOT NULL DEFAULT 'normal',
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_action_audit_channel_created
                 ON action_audit(channel_id, created_at DESC)
                 """
@@ -242,5 +251,38 @@ class ActionAuditStore:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT alias, channel_id, guild_id FROM control_aliases ORDER BY alias"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_user_response_mode(self, user_id: str) -> str:
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            row = conn.execute(
+                "SELECT mode FROM user_response_controls WHERE user_id = ?",
+                (str(user_id),),
+            ).fetchone()
+        return row[0] if row else "normal"
+
+    def set_user_response_mode(self, user_id: str, mode: str) -> None:
+        mode = mode.strip().lower()
+        if mode not in {"normal", "prompted", "strict"}:
+            raise ValueError("user response mode must be normal, prompted, or strict")
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                """
+                INSERT INTO user_response_controls (user_id, mode)
+                VALUES (?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    mode = excluded.mode,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (str(user_id), mode),
+            )
+            conn.commit()
+
+    def list_user_response_modes(self) -> List[Dict]:
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT user_id, mode, updated_at FROM user_response_controls ORDER BY updated_at DESC"
             ).fetchall()
         return [dict(row) for row in rows]

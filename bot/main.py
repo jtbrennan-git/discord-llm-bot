@@ -243,6 +243,7 @@ class DiscordLLMBot:
                 await self._run_profile_learning(channel_id, str(message.guild.id))
 
         channel_state = self.channel_states.get(channel_id)
+        user_response_mode = self._user_response_mode(str(message.author.id))
 
         bot_was_mentioned = self.bot.user in message.mentions
         is_reply_to_bot = (
@@ -267,8 +268,15 @@ class DiscordLLMBot:
             return
 
         if self._message_names_bot(message.content):
+            if user_response_mode == "strict":
+                self._record_action_audit(message, action_type="skip", reason="user requires @ mention or reply")
+                return
             self.channel_states.mark_direct_interaction(channel_id)
             await self._handle_name_call(message)
+            return
+
+        if user_response_mode in {"prompted", "strict"}:
+            self._record_action_audit(message, action_type="skip", reason=f"user response mode is {user_response_mode}")
             return
 
         if await self._maybe_handle_implicit_followup(message):
@@ -887,6 +895,11 @@ class DiscordLLMBot:
                 "spontaneous_rate": 1.0,
             }
         return self.action_audit.get_channel_controls(channel_id)
+
+    def _user_response_mode(self, user_id: str) -> str:
+        if not self.action_audit:
+            return "normal"
+        return self.action_audit.get_user_response_mode(user_id)
 
     def _enqueue_group_learning(self, channel_id: str, guild_id: Optional[str]) -> None:
         if not self.learning_queue:
@@ -1771,6 +1784,13 @@ class ControlCommands(commands.Cog):
             return f"#{channel.name}"
         return channel_id
 
+    @staticmethod
+    def _resolve_user_id(value: str) -> Optional[str]:
+        value = (value or "").strip()
+        if value.startswith("<@") and value.endswith(">"):
+            value = value[2:-1].lstrip("!")
+        return value if value.isdigit() else None
+
     def _format_controls(self, controls: dict) -> str:
         labels = {
             "learning_enabled": "learning",
@@ -2002,6 +2022,27 @@ class ControlCommands(commands.Cog):
             await ctx.send("\n".join(lines)[:1900])
             return
 
+        if action == "users":
+            rows = self.action_audit.list_user_response_modes()
+            if not rows:
+                await ctx.send("No user response controls set.")
+                return
+            lines = ["**User Response Controls**"]
+            for row in rows[:40]:
+                lines.append(f"{row['user_id']} -> {row['mode']}")
+            await ctx.send("\n".join(lines)[:1900])
+            return
+
+        if action in {"user", "user_mode", "user-response"}:
+            user_id = self._resolve_user_id(target)
+            mode = rest.strip().lower()
+            if not user_id or mode not in {"normal", "prompted", "strict"}:
+                await ctx.send("Usage: `!control user <@user|user_id> <normal|prompted|strict>`")
+                return
+            self.action_audit.set_user_response_mode(user_id, mode)
+            await ctx.send(f"User `{user_id}` response mode set to `{mode}`.")
+            return
+
         if action == "dashboard" and not target:
             await ctx.send("\n".join(self._guild_dashboard_lines())[:1900])
             return
@@ -2224,6 +2265,7 @@ class ControlCommands(commands.Cog):
             "Usage: `!control status`, `channels`, `bind`, `aliases`, `dashboard [target]`, "
             "`quiet|learning|style|topics|starters|spontaneous|tracking <target> on|off`, "
             "`spontaneous_rate <target> <off|very-low|low|medium|normal|high|0..2>`, "
+            "`user <@user|user_id> <normal|prompted|strict>`, `users`, "
             "`topics <target>`, `topic <target> ...`, `learn <target> [style|topics|all]`, "
             "`coverage`, `guilds`, `activity`, `logs [count]`, `seen <target>`, `say <target> <message>`, "
             "`delete <target> <message_id>`, `react <target> <message_id> <emoji>`"

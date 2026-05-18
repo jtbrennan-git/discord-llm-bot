@@ -608,6 +608,23 @@ class TestActionAuditStore:
         with pytest.raises(ValueError):
             self.store.set_spontaneous_rate("c1", 2.1)
 
+    def test_user_response_modes(self):
+        assert self.store.get_user_response_mode("u1") == "normal"
+
+        self.store.set_user_response_mode("u1", "prompted")
+        self.store.set_user_response_mode("u2", "strict")
+
+        assert self.store.get_user_response_mode("u1") == "prompted"
+        assert self.store.get_user_response_mode("u2") == "strict"
+        assert {row["user_id"]: row["mode"] for row in self.store.list_user_response_modes()} == {
+            "u1": "prompted",
+            "u2": "strict",
+        }
+
+    def test_user_response_mode_validates(self):
+        with pytest.raises(ValueError):
+            self.store.set_user_response_mode("u1", "weird")
+
     def test_control_aliases_bind_resolve_and_unbind(self):
         self.store.bind_alias("main-general", "123", "guild")
 
