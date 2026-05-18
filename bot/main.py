@@ -201,11 +201,11 @@ class DiscordLLMBot:
     async def on_message(self, message: discord.Message):
         if message.author.bot:
             return
-        if isinstance(message.channel, discord.DMChannel) and not self.config.allow_dms:
+        if not message.guild:
             return
 
         channel_id = str(message.channel.id)
-        guild_id = str(message.guild.id) if message.guild else None
+        guild_id = str(message.guild.id)
         if guild_id in {self.config.control_guild_id, self.config.target_guild_id}:
             logger.info(
                 "Message received guild_id=%s channel_id=%s channel_name=%s author_id=%s content_len=%s",
@@ -233,7 +233,7 @@ class DiscordLLMBot:
 
         if tracking_enabled and self._learning_allowed(message) and controls["learning_enabled"]:
             self.learning_message_counts[channel_id] = self.learning_message_counts.get(channel_id, 0) + 1
-            self._enqueue_group_learning(channel_id, str(message.guild.id) if message.guild else None)
+            self._enqueue_group_learning(channel_id, str(message.guild.id))
             self._expire_topic_starters()
             self._record_topic_followup(channel_id)
 
@@ -262,10 +262,6 @@ class DiscordLLMBot:
             return
 
         await self.bot.process_commands(message)
-
-        if isinstance(message.channel, discord.DMChannel):
-            await self._handle_message(message, message.content)
-            return
 
         if self._message_names_bot(message.content):
             if user_response_mode == "strict":
@@ -1314,6 +1310,69 @@ class MainCommands(commands.Cog):
         parts.append(f"spont-rate={float(controls.get('spontaneous_rate', 1.0)):.2g}x")
         return ", ".join(parts)
 
+    def _command_help(self) -> dict:
+        return {
+            "ping": {
+                "usage": "!ping",
+                "summary": "Check whether the bot is online and see current Discord latency.",
+                "details": "Returns a short latency message in milliseconds.",
+            },
+            "help": {
+                "usage": "!help [command]",
+                "summary": "Show the command list or detailed help for one command.",
+                "details": "Examples: `!help`, `!help control`, `!help feedback`.",
+            },
+            "control": {
+                "usage": "!control status|mute|unmute|prompted|strict|normal",
+                "summary": "Set your personal bot response preference.",
+                "details": (
+                    "`!control status` shows your current setting.\n"
+                    "`!control mute` makes the bot respond to you only when you @mention it or use Discord reply.\n"
+                    "`!control unmute` restores normal behavior.\n"
+                    "`!control prompted` prevents spontaneous replies to you, but still allows name prompts.\n"
+                    "`!control strict` and `!control normal` set those modes directly.\n"
+                    "Admins also use `!control` in the control channel for channel, user, logging, delete, react, and dashboard controls."
+                ),
+            },
+            "whoami": {
+                "usage": "!whoami",
+                "summary": "Ask the bot for a short description of itself.",
+                "details": "This is just an identity/status command. It does not change settings.",
+            },
+            "feedback": {
+                "usage": "!feedback",
+                "summary": "Show what reaction feedback the bot has collected.",
+                "details": (
+                    "The bot tracks reactions on its own messages as signal. Positive and negative reaction totals feed the lessons "
+                    "shown here, which are used to tune future responses."
+                ),
+            },
+            "learn": {
+                "usage": "!learn",
+                "summary": "Rebuild the bot's feedback lessons from collected reaction data.",
+                "details": (
+                    "Use this after enough reactions have accumulated. It refreshes the lesson list used in the bot prompt. "
+                    "If there is not enough feedback yet, it will say so."
+                ),
+            },
+            "improve": {
+                "usage": "!improve <suggestion>",
+                "summary": "Log a human suggestion for improving the bot.",
+                "details": (
+                    "This writes your suggestion to the improvement log with your server display name and channel. "
+                    "It is for manual review and future tuning, not an immediate behavior change."
+                ),
+            },
+            "admin": {
+                "usage": "!admin <status|profiles|profile|logs|memories|style|topics|dashboard|topic|channel|learn|lastaction|why|clear>",
+                "summary": "Developer-only diagnostics and maintenance commands.",
+                "details": (
+                    "Only configured dev users can use it. It exposes internal status, profile/style/topic diagnostics, "
+                    "channel controls, learning jobs, recent action logs, and cleanup tools."
+                ),
+            },
+        }
+
     @commands.command(name="ping")
     async def ping(self, ctx):
         lat = round(self.bot.latency * 1000)
@@ -1327,25 +1386,37 @@ class MainCommands(commands.Cog):
             await ctx.send(f"{lat}ms. Alive, barely. Don't ask me to run a marathon.")
 
     @commands.command(name="help")
-    async def help_command(self, ctx):
+    async def help_command(self, ctx, command_name: str = ""):
         name = self.bot.user.display_name if self.bot.user else "bot"
+        help_items = self._command_help()
+        command_name = (command_name or "").strip().lower().lstrip("!")
+        if command_name:
+            item = help_items.get(command_name)
+            if not item:
+                await ctx.send(f"No help for `{command_name}`. Use `!help` to see commands.")
+                return
+            embed = discord.Embed(
+                title=f"!{command_name}",
+                description=item["summary"],
+                color=discord.Color.blue(),
+            )
+            embed.add_field(name="Usage", value=f"`{item['usage']}`", inline=False)
+            embed.add_field(name="Details", value=item["details"], inline=False)
+            await ctx.send(embed=embed)
+            return
+
         embed = discord.Embed(
             title=name,
             description="I'm the bot. I'm here to hang out.",
             color=discord.Color.blue(),
         )
-        embed.add_field(name="How to talk to me", value=f"Mention me (@{name}) or DM me.", inline=False)
-        embed.add_field(name="Commands", value=(
-            "`!ping` - Check if I'm alive\n"
-            "`!help` - Show this message\n"
-            "`!control status` - Show your bot response setting\n"
-            "`!control mute` - Only respond to your @mentions or Discord replies\n"
-            "`!control unmute` - Restore normal responses to you\n"
-            "`!whoami` - Ask me who I am\n"
-            "`!feedback` - Show reaction feedback stats\n"
-            "`!learn` - Force re-analyze feedback lessons\n"
-            "`!improve <text>` - Suggest an improvement\n"
-        ), inline=False)
+        embed.add_field(name="How to talk to me", value=f"Mention me or @{name} in this server.", inline=False)
+        commands_text = "\n".join(
+            f"`!{command}` - {item['summary']}"
+            for command, item in help_items.items()
+        )
+        embed.add_field(name="Commands", value=commands_text, inline=False)
+        embed.add_field(name="Details", value="Use `!help <command>` for details, like `!help feedback`.", inline=False)
         embed.add_field(name="Memory", value="I remember recent messages in each channel.", inline=False)
         await ctx.send(embed=embed)
 
