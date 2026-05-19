@@ -428,7 +428,7 @@ class TestResponseSending:
         assert self.bot.active_followups["c1"]["remaining"] == 4
 
     @pytest.mark.asyncio
-    async def test_implicit_followup_probability_can_fade_out(self):
+    async def test_implicit_followup_is_not_probability_gated(self):
         self.bot.active_followups = {
             "c1": {
                 "message_id": "m1",
@@ -439,19 +439,19 @@ class TestResponseSending:
         }
         self.bot.channel_states = MagicMock()
         self.bot.action_audit = None
+        self.bot._channel_controls = MagicMock(return_value={"quiet_enabled": False, "spontaneous_reply_enabled": True})
         self.bot._generate_and_execute = AsyncMock()
         message = MagicMock()
         message.channel.id = "c1"
         message.channel.__class__ = MagicMock()
-        message.content = "yeah"
+        message.content = "what do you mean"
         message.author.display_name = "Alice"
 
         with patch("bot.main.random.random", return_value=0.99):
             handled = await self.bot._maybe_handle_implicit_followup(message)
 
-        assert handled is False
-        self.bot._generate_and_execute.assert_not_called()
-        assert "c1" not in self.bot.active_followups
+        assert handled is True
+        self.bot._generate_and_execute.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_low_signal_followup_ends_window(self):

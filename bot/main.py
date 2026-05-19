@@ -461,9 +461,8 @@ class DiscordLLMBot:
             return
         prompt = (
             f"Someone may have referred to you by name as {self._bot_identity()}.\n"
-            "Decide whether the message is actually inviting you into the conversation.\n"
-            "If it is just talking about you, quoting your name, or does not need you, return [SILENT].\n"
-            "If a reply would help, return [REPLY]. Only return standalone [REACT: emoji] when words would add nothing.\n\n"
+            "Treat this as a direct prompt. Return [REPLY] unless a standalone [REACT: emoji] is clearly better. "
+            "Do not return [SILENT].\n\n"
             f"Message: {message.content}"
         )
         await self._generate_and_execute(message, prompt, for_spontaneous=True)
@@ -498,22 +497,6 @@ class DiscordLLMBot:
             )
             return False
 
-        max_messages = max(1, self.config.followup_window_messages)
-        chance = min(0.85, max(0.05, ((remaining + 1) / max_messages) ** 1.5))
-        roll = random.random()
-        if roll > chance:
-            self._record_action_audit(
-                message,
-                action_type="skip",
-                reason=f"implicit followup probability roll failed remaining={remaining}",
-                probability=chance,
-                roll=roll,
-                message_id=str(active.get("message_id") or ""),
-            )
-            if remaining <= 0:
-                self.active_followups.pop(channel_id, None)
-            return False
-
         controls = self._channel_controls(channel_id)
         if controls["quiet_enabled"] or not controls.get("spontaneous_reply_enabled", False):
             return False
@@ -532,8 +515,6 @@ class DiscordLLMBot:
             message,
             action_type="implicit_followup",
             reason=f"active bot message {active.get('message_id')} remaining={remaining}",
-            probability=chance,
-            roll=roll,
             message_id=str(active.get("message_id") or ""),
         )
         if remaining <= 0:
