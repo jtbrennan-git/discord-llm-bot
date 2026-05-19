@@ -408,7 +408,7 @@ A topic starter may run only when all are true:
 - Channel has been idle from bot action for at least `TOPIC_STARTER_MIN_IDLE_SECONDS`, default `900`.
 - Conversation depth is below `2`.
 - No topic was started in this channel in the last `TOPIC_STARTER_COOLDOWN_SECONDS`, default `7200`.
-- Random roll passes `TOPIC_STARTER_CHANCE`, default `0.08`.
+- Random roll passes `TOPIC_STARTER_CHANCE`, default `0` (disabled until explicitly enabled).
 
 ### Hermes Prompt
 
@@ -544,7 +544,7 @@ TOPIC_STARTER_ENABLED=true
 TOPIC_STARTER_MIN_MESSAGES_SINCE_ACTION=25
 TOPIC_STARTER_MIN_IDLE_SECONDS=900
 TOPIC_STARTER_COOLDOWN_SECONDS=7200
-TOPIC_STARTER_CHANCE=0.08
+TOPIC_STARTER_CHANCE=0
 STYLE_TRANSLATION_PASS_ENABLED=false
 ALLOW_DM_LEARNING=false
 ```

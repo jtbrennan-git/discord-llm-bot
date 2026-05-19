@@ -62,7 +62,7 @@ class BotConfig:
         self.topic_starter_min_messages_since_action: int = int(os.getenv("TOPIC_STARTER_MIN_MESSAGES_SINCE_ACTION", "25"))
         self.topic_starter_min_idle_seconds: int = int(os.getenv("TOPIC_STARTER_MIN_IDLE_SECONDS", "900"))
         self.topic_starter_cooldown_seconds: int = int(os.getenv("TOPIC_STARTER_COOLDOWN_SECONDS", "7200"))
-        self.topic_starter_chance: float = float(os.getenv("TOPIC_STARTER_CHANCE", "0.08"))
+        self.topic_starter_chance: float = float(os.getenv("TOPIC_STARTER_CHANCE", "0"))
         self.style_translation_pass_enabled: bool = os.getenv("STYLE_TRANSLATION_PASS_ENABLED", "false").lower() == "true"
         self.learning_queue_maxsize: int = int(os.getenv("LEARNING_QUEUE_MAXSIZE", "25"))
         self.dry_run_actions: bool = os.getenv("DRY_RUN_ACTIONS", "false").lower() == "true"
@@ -71,7 +71,7 @@ class BotConfig:
         self.spontaneous_max_thread_depth: int = int(os.getenv("SPONTANEOUS_MAX_THREAD_DEPTH", "4"))
         self.spontaneous_idle_trigger_seconds: int = int(os.getenv("SPONTANEOUS_IDLE_TRIGGER_SECONDS", "1800"))
         self.spontaneous_idle_min_messages: int = int(os.getenv("SPONTANEOUS_IDLE_MIN_MESSAGES", "2"))
-        self.spontaneous_chance_cap: float = float(os.getenv("SPONTANEOUS_CHANCE_CAP", "0.30"))
+        self.spontaneous_chance_cap: float = float(os.getenv("SPONTANEOUS_CHANCE_CAP", "0"))
         self.spontaneous_idle_ramp_seconds: int = int(os.getenv("SPONTANEOUS_IDLE_RAMP_SECONDS", "7200"))
         self.followup_window_messages: int = int(os.getenv("FOLLOWUP_WINDOW_MESSAGES", "4"))
         self.followup_window_seconds: int = int(os.getenv("FOLLOWUP_WINDOW_SECONDS", "300"))

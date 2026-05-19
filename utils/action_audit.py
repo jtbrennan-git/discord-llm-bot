@@ -58,7 +58,7 @@ class ActionAuditStore:
                     spontaneous_enabled INTEGER NOT NULL DEFAULT 1,
                     quiet_enabled INTEGER NOT NULL DEFAULT 0,
                     tracking_enabled INTEGER NOT NULL DEFAULT 1,
-                    spontaneous_rate REAL NOT NULL DEFAULT 1.0,
+                    spontaneous_rate REAL NOT NULL DEFAULT 0.0,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
                 """
@@ -73,7 +73,7 @@ class ActionAuditStore:
                 )
             if "spontaneous_rate" not in columns:
                 conn.execute(
-                    "ALTER TABLE channel_controls ADD COLUMN spontaneous_rate REAL NOT NULL DEFAULT 1.0"
+                    "ALTER TABLE channel_controls ADD COLUMN spontaneous_rate REAL NOT NULL DEFAULT 0.0"
                 )
             if "mode" not in columns:
                 conn.execute(
@@ -193,7 +193,7 @@ class ActionAuditStore:
                 "spontaneous_enabled": True,
                 "quiet_enabled": False,
                 "tracking_enabled": True,
-                "spontaneous_rate": 1.0,
+                "spontaneous_rate": 0.0,
                 "mode": "normal",
             }
         data = dict(row)

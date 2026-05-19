@@ -597,7 +597,7 @@ class DiscordLLMBot:
         if controls["quiet_enabled"] or not controls["spontaneous_enabled"]:
             self._record_action_audit(message, action_type="skip", reason="channel quiet/spontaneous disabled")
             return
-        rate = max(0.0, min(2.0, float(controls.get("spontaneous_rate", 1.0))))
+        rate = max(0.0, min(2.0, float(controls.get("spontaneous_rate", 0.0))))
         if rate <= 0:
             self._record_action_audit(message, action_type="skip", reason="spontaneous rate is zero")
             return
@@ -626,6 +626,9 @@ class DiscordLLMBot:
         counter = channel_state.message_count
         scale = self.config.spontaneous_message_target * 1.5
         chance_cap = max(0.0, min(1.0, self.config.spontaneous_chance_cap))
+        if chance_cap <= 0:
+            self._record_action_audit(message, action_type="skip", reason="spontaneous chance cap is zero")
+            return
         chance = min(chance_cap, counter / scale)
 
         # Time-based modifier ramps to the same cap over the configured idle window.
@@ -908,7 +911,7 @@ class DiscordLLMBot:
                 "spontaneous_enabled": True,
                 "quiet_enabled": False,
                 "tracking_enabled": True,
-                "spontaneous_rate": 1.0,
+                "spontaneous_rate": 0.0,
                 "mode": "normal",
             }
         return self.action_audit.get_channel_controls(channel_id)
@@ -1011,6 +1014,9 @@ class DiscordLLMBot:
         if isinstance(message.channel, discord.DMChannel):
             return False
         if not self.config.topic_starter_enabled or not self.topic_learner or not self.topic_log:
+            return False
+        if self.config.topic_starter_chance <= 0:
+            self._record_action_audit(message, action_type="skip", reason="topic starter chance is zero")
             return False
         controls = self._channel_controls(str(message.channel.id))
         if controls["quiet_enabled"] or not controls["starters_enabled"] or not controls["topics_enabled"]:
@@ -1355,7 +1361,7 @@ class MainCommands(commands.Cog):
         }
         parts = [f"{label}={'on' if controls[key] else 'off'}" for key, label in labels.items()]
         parts.insert(0, f"mode={controls.get('mode', 'normal')}")
-        parts.append(f"spont-rate={float(controls.get('spontaneous_rate', 1.0)):.2g}x")
+        parts.append(f"spont-rate={float(controls.get('spontaneous_rate', 0.0)):.2g}x")
         return ", ".join(parts)
 
     def _command_help(self) -> dict:
@@ -2117,7 +2123,7 @@ class ControlCommands(commands.Cog):
         }
         parts = [f"{label}={'on' if controls[key] else 'off'}" for key, label in labels.items()]
         parts.insert(0, f"mode={controls.get('mode', 'normal')}")
-        parts.append(f"spont-rate={float(controls.get('spontaneous_rate', 1.0)):.2g}x")
+        parts.append(f"spont-rate={float(controls.get('spontaneous_rate', 0.0)):.2g}x")
         return ", ".join(parts)
 
     async def _send_target_message(self, channel_id: str, text: str) -> bool:

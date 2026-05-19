@@ -680,7 +680,7 @@ class TestActionAuditStore:
         assert defaults["learning_enabled"] is True
         assert defaults["quiet_enabled"] is False
         assert defaults["tracking_enabled"] is True
-        assert defaults["spontaneous_rate"] == 1.0
+        assert defaults["spontaneous_rate"] == 0.0
         assert defaults["mode"] == "normal"
 
         self.store.set_channel_control("c1", "quiet", True)
@@ -723,7 +723,7 @@ class TestActionAuditStore:
         migrated = ActionAuditStore(path)
 
         assert migrated.get_channel_controls("c1")["tracking_enabled"] is True
-        assert migrated.get_channel_controls("c1")["spontaneous_rate"] == 1.0
+        assert migrated.get_channel_controls("c1")["spontaneous_rate"] == 0.0
         assert migrated.get_channel_controls("c1")["mode"] == "normal"
 
     def test_spontaneous_rate_validates_range(self):
