@@ -103,6 +103,8 @@ class FeedbackStore:
     def classify_reaction(self, reaction: str) -> str:
         """Classify a reaction as positive, negative, or neutral."""
         reaction_lower = reaction.lower().strip()
+        if reaction_lower.startswith("<:lolll:") or reaction_lower == ":lolll:":
+            return "positive"
         if reaction_lower in POSITIVE_REACTIONS:
             return "positive"
         elif reaction_lower in NEGATIVE_REACTIONS:

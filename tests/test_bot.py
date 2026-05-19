@@ -1043,6 +1043,11 @@ class TestFeedbackTracker:
         self.tracker.add_reaction("1", "💀", "user1")
         assert self.tracker.total_positive == 1
 
+    def test_lolll_custom_emoji_is_positive(self):
+        self.tracker.register_message("1", "test message")
+        self.tracker.add_reaction("1", "<:lolll:1262184349667823667>", "user1")
+        assert self.tracker.total_positive == 1
+
     def test_negative_reaction(self):
         self.tracker.register_message("1", "test message")
         self.tracker.add_reaction("1", "👎", "user1")
