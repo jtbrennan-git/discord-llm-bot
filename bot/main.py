@@ -314,7 +314,7 @@ class DiscordLLMBot:
             profiles=self.profiles if getattr(self.config, "profile_context_enabled", False) else None,
             feedback=self.feedback,
             style_context=style_context,
-        )
+        ) + self._guild_emoji_prompt_context()
 
     def _build_context(self, channel_id: str, for_spontaneous: bool = False) -> List[Dict[str, str]]:
         """Build chat context using proper assistant/user roles."""
@@ -396,25 +396,11 @@ class DiscordLLMBot:
                 self._record_action_audit(message, action_type="dry_run_react", reason=emoji)
                 self._reset_channel_counters(channel_id)
                 return
-            try:
-                await message.add_reaction(emoji)
-            except discord.HTTPException:
-                # Fallback: try as custom emoji
-                if emoji.startswith(":") and emoji.endswith(":") and message.guild:
-                    name = emoji.strip(":")
-                    guild_emoji = discord.utils.get(message.guild.emojis, name=name)
-                    if guild_emoji:
-                        await message.add_reaction(guild_emoji)
-                        if str(message.id) not in self.bot_message_map:
-                            self.bot_message_map[str(message.id)] = f"[reacted with {emoji}]"
-                        self._record_action_audit(message, action_type="react", reason=emoji, final_action="react")
-                        self._reset_channel_counters(channel_id)
-                        return
-                await message.add_reaction("💀")
+            actual_emoji = await self._add_reaction(message, emoji)
             # Track for feedback
             if str(message.id) not in self.bot_message_map:
-                self.bot_message_map[str(message.id)] = f"[reacted with {emoji}]"
-            self._record_action_audit(message, action_type="react", reason=emoji, final_action="react")
+                self.bot_message_map[str(message.id)] = f"[reacted with {actual_emoji}]"
+            self._record_action_audit(message, action_type="react", reason=str(actual_emoji), final_action="react")
             self._reset_channel_counters(channel_id)
 
         elif parsed.action == "IMAGE_GEN":
@@ -718,6 +704,29 @@ class DiscordLLMBot:
     def _bot_identity(self) -> str:
         return self.bot.user.display_name if self.bot and self.bot.user else "bot"
 
+    def _guild_emoji_prompt_context(self) -> str:
+        if not self.bot:
+            return ""
+        names = []
+        for guild in getattr(self.bot, "guilds", []) or []:
+            for emoji in getattr(guild, "emojis", []) or []:
+                name = getattr(emoji, "name", "")
+                if name and name not in names:
+                    names.append(name)
+                if len(names) >= 60:
+                    break
+            if len(names) >= 60:
+                break
+        if not names:
+            return ""
+        listed = ", ".join(f":{name}:" for name in names[:60])
+        return (
+            "\n\n## Server custom reactions\n"
+            "You may use these server custom emoji in [REACT] by writing the exact colon name. "
+            "Only use one when it fits better than a standard emoji.\n"
+            f"{listed}"
+        )
+
     @staticmethod
     def _server_display_name(user) -> str:
         return getattr(user, "display_name", None) or getattr(user, "name", None) or str(user)
@@ -816,10 +825,42 @@ class DiscordLLMBot:
         if self.config.dry_run_actions:
             logger.info("DRY_RUN would add supplemental reaction %s in channel_id=%s", emoji, channel_id)
             return
+        await self._add_reaction(message, emoji, suppress_errors=True)
+
+    def _resolve_custom_emoji(self, guild, emoji: str):
+        if not guild or not emoji:
+            return None
+        text = emoji.strip()
+        if text.startswith("<") and text.endswith(">"):
+            try:
+                return discord.PartialEmoji.from_str(text)
+            except Exception:
+                return None
+        if text.startswith(":") and text.endswith(":"):
+            name = text.strip(":")
+        else:
+            name = text
+        if not name or any(ch.isspace() for ch in name):
+            return None
+        exact = discord.utils.get(getattr(guild, "emojis", []) or [], name=name)
+        if exact:
+            return exact
+        lowered = name.lower()
+        return next((e for e in getattr(guild, "emojis", []) or [] if getattr(e, "name", "").lower() == lowered), None)
+
+    async def _add_reaction(self, message: discord.Message, emoji: str, *, suppress_errors: bool = False):
+        candidate = (emoji or "👍").strip()
+        custom = self._resolve_custom_emoji(getattr(message, "guild", None), candidate)
         try:
-            await message.add_reaction(emoji)
+            actual = custom or candidate
+            await message.add_reaction(actual)
+            return actual
         except discord.HTTPException:
-            logger.debug("Supplemental reaction failed channel_id=%s emoji=%s", channel_id, emoji)
+            if suppress_errors:
+                logger.debug("Reaction failed channel_id=%s emoji=%s", getattr(message.channel, "id", None), emoji)
+                return None
+            await message.add_reaction("💀")
+            return "💀"
 
     def _extract_image_urls(self, message: discord.Message) -> List[str]:
         """Extract image URLs from message attachments."""

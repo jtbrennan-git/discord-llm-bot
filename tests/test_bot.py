@@ -265,6 +265,31 @@ class TestBotNameDetection:
         assert DiscordLLMBot._server_display_name(user) == "Server Nick"
 
 
+class TestCustomEmoji:
+    def setup_method(self):
+        self.bot = object.__new__(DiscordLLMBot)
+        emoji = MagicMock()
+        emoji.name = "thonk"
+        guild = MagicMock()
+        guild.emojis = [emoji]
+        self.bot.bot = MagicMock()
+        self.bot.bot.guilds = [guild]
+        self.guild = guild
+        self.emoji = emoji
+
+    def test_guild_emoji_prompt_context_lists_colon_names(self):
+        context = self.bot._guild_emoji_prompt_context()
+
+        assert ":thonk:" in context
+        assert "Server custom reactions" in context
+
+    def test_resolves_colon_custom_emoji_case_insensitive(self):
+        assert self.bot._resolve_custom_emoji(self.guild, ":ThOnK:") is self.emoji
+
+    def test_plain_unicode_is_not_custom_emoji(self):
+        assert self.bot._resolve_custom_emoji(self.guild, "💀") is None
+
+
 class TestResponseSending:
     class FakeHistory:
         def __init__(self, messages):
