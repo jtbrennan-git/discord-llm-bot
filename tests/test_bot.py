@@ -935,13 +935,18 @@ class TestUserProfileStore:
         facts = self.store.get_facts("123")
         assert len(facts) == 0
 
-    def test_custom_trigger_matches_case_insensitive_substring(self):
+    def test_custom_trigger_matches_exact_message_case_insensitive(self):
         self.store.set_trigger("Good Bot", "👍", guild_id="g1", set_by="u1")
 
-        match = self.store.find_trigger_match("that was a GOOD bot moment", guild_id="g1")
+        match = self.store.find_trigger_match("GOOD   BOT", guild_id="g1")
 
         assert match["trigger_text"] == "Good Bot"
         assert match["reaction"] == "👍"
+
+    def test_custom_trigger_does_not_match_inside_longer_message(self):
+        self.store.set_trigger("good bot", "👍", guild_id="g1")
+
+        assert self.store.find_trigger_match("that was a good bot moment", guild_id="g1") is None
 
     def test_custom_trigger_forget_is_scoped_to_guild(self):
         self.store.set_trigger("good bot", "👍", guild_id="g1")
@@ -959,7 +964,7 @@ class TestUserProfileStore:
         imported = self.store.import_triggers_csv(str(path), guild_id="g1")
 
         assert imported == 1
-        assert self.store.find_trigger_match("HELLO there", guild_id="g1")["reaction"] == "👋"
+        assert self.store.find_trigger_match("HELLO", guild_id="g1")["reaction"] == "👋"
 
     def test_import_triggers_csv_once_does_not_overwrite_later_changes(self, tmp_path):
         path = tmp_path / "triggers.csv"

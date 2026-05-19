@@ -1465,7 +1465,7 @@ class MainCommands(commands.Cog):
             },
             "trigger": {
                 "usage": "!trigger <text> <response>",
-                "summary": "Send a saved response when a future message contains text, ignoring case.",
+                "summary": "Send a saved response when a future message exactly matches text, ignoring case.",
                 "details": (
                     "Examples: `!trigger \"good bot\" 👍` or `!trigger good bot thanks`. "
                     "Triggers are stored in the local profile database for this server."
@@ -1678,7 +1678,7 @@ class MainCommands(commands.Cog):
         except ValueError as exc:
             await ctx.send(str(exc))
             return
-        await ctx.send(f"Trigger set: messages containing `{trigger_text}` will get `{response}`.")
+        await ctx.send(f"Trigger set: messages matching `{trigger_text}` will get `{response}`.")
 
     @commands.command(name="forget")
     async def forget(self, ctx, *, trigger_text: str = ""):

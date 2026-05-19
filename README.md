@@ -8,7 +8,7 @@ A Python Discord bot that can participate in server conversations, react, learn 
 - LLM-backed replies with tagged actions: reply, react, image analysis, image generation, or silent
 - Per-channel memory, style learning, topic learning, and spontaneous reply controls
 - Per-user response and memory/privacy controls
-- Custom text triggers with local SQLite persistence and optional one-time CSV seeding
+- Custom exact-match text triggers with local SQLite persistence and optional one-time CSV seeding
 - Profile prompt context is disabled by default for safer public multi-server deployments
 - Admin/control-plane commands for diagnostics, channel modes, delete/react, logs, and learning jobs
 - Reaction feedback and manual quality labels for personality tuning

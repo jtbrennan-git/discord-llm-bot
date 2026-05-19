@@ -129,7 +129,7 @@ class UserProfileStore:
             """, (str(guild_id or ""),)).fetchall()
         for row in rows:
             trigger_key = row["trigger_key"]
-            if trigger_key and trigger_key in text:
+            if trigger_key and trigger_key == text:
                 return dict(row)
         return None
 
