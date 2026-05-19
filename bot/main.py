@@ -206,10 +206,10 @@ class DiscordLLMBot:
     async def on_message(self, message: discord.Message):
         if message.author.bot:
             return
-        if not message.guild:
-            return
         if self._is_command_message(message.content):
             await self.bot.process_commands(message)
+            return
+        if not message.guild:
             return
 
         channel_id = str(message.channel.id)
@@ -1748,6 +1748,11 @@ class MainCommands(commands.Cog):
                 return url
         return ""
 
+    def _trigger_guild_id(self, ctx) -> str:
+        if getattr(ctx, "guild", None):
+            return str(ctx.guild.id)
+        return getattr(self.config, "target_guild_id", "") if self.config else ""
+
     @commands.command(name="trigger")
     async def trigger(self, ctx, *, args: str = ""):
         if not self.profiles:
@@ -1759,7 +1764,10 @@ class MainCommands(commands.Cog):
         if not trigger_text or not response:
             await ctx.send("Usage: `!trigger <text> <response>` or attach an image with `!trigger <text>`")
             return
-        guild_id = str(ctx.guild.id) if ctx.guild else ""
+        guild_id = self._trigger_guild_id(ctx)
+        if not guild_id:
+            await ctx.send("I need TARGET_GUILD_ID configured before private trigger commands can update server triggers.")
+            return
         try:
             self.profiles.set_trigger(trigger_text, response, guild_id=guild_id, set_by=str(ctx.author.id))
         except ValueError as exc:
@@ -1776,7 +1784,10 @@ class MainCommands(commands.Cog):
         if not trigger_text:
             await ctx.send("Usage: `!forget <text>`")
             return
-        guild_id = str(ctx.guild.id) if ctx.guild else ""
+        guild_id = self._trigger_guild_id(ctx)
+        if not guild_id:
+            await ctx.send("I need TARGET_GUILD_ID configured before private trigger commands can update server triggers.")
+            return
         if self.profiles.forget_trigger(trigger_text, guild_id=guild_id):
             await ctx.send(f"Forgot trigger `{trigger_text}`.")
         else:

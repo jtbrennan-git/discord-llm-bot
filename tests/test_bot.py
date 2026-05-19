@@ -144,6 +144,11 @@ class TestHighlights:
 
 
 class TestTriggerCommandParsing:
+    def setup_method(self):
+        self.config = MagicMock()
+        self.config.target_guild_id = "target-guild"
+        self.commands = MainCommands(MagicMock(), MagicMock(), MagicMock(), config=self.config)
+
     def test_parse_quoted_trigger_without_response(self):
         trigger, response = MainCommands._parse_trigger_args('"good bot"')
 
@@ -175,6 +180,18 @@ class TestTriggerCommandParsing:
         ctx.message.attachments = [attachment]
 
         assert MainCommands._first_image_attachment_url(ctx) == ""
+
+    def test_trigger_guild_id_uses_current_guild_in_server(self):
+        ctx = MagicMock()
+        ctx.guild.id = 123
+
+        assert self.commands._trigger_guild_id(ctx) == "123"
+
+    def test_trigger_guild_id_uses_target_guild_in_dm(self):
+        ctx = MagicMock()
+        ctx.guild = None
+
+        assert self.commands._trigger_guild_id(ctx) == "target-guild"
 
 
 # ─── Probability Curve ─────────────────────────────────────────────────
@@ -458,6 +475,19 @@ class TestResponseSending:
         assert self.bot._is_command_message("/control mute")
         assert not self.bot._is_command_message("testbot help")
         assert not self.bot._is_command_message("that was !weird")
+
+    @pytest.mark.asyncio
+    async def test_dm_command_is_processed_before_guild_gate(self):
+        self.bot._is_command_message = MagicMock(return_value=True)
+        self.bot.bot.process_commands = AsyncMock()
+        message = MagicMock()
+        message.author.bot = False
+        message.guild = None
+        message.content = "!trigger zean"
+
+        await self.bot.on_message(message)
+
+        self.bot.bot.process_commands.assert_awaited_once_with(message)
 
     @pytest.mark.asyncio
     async def test_custom_trigger_sends_stored_response(self, tmp_path):
