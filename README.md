@@ -8,6 +8,7 @@ A Python Discord bot that can participate in server conversations, react, learn 
 - LLM-backed replies with tagged actions: reply, react, image analysis, image generation, or silent
 - Per-channel memory, style learning, topic learning, and spontaneous reply controls
 - Per-user response and memory/privacy controls
+- Custom text triggers with local SQLite persistence and optional one-time CSV seeding
 - Profile prompt context is disabled by default for safer public multi-server deployments
 - Admin/control-plane commands for diagnostics, channel modes, delete/react, logs, and learning jobs
 - Reaction feedback and manual quality labels for personality tuning
@@ -47,6 +48,8 @@ COMMAND_PREFIX=!
 LLM_BASE_URL=
 LLM_MODEL=openrouter/owl-alpha
 PROFILE_CONTEXT_ENABLED=false
+TRIGGER_DEFAULTS_CSV=fellasbot_triggers_active.csv
+TRIGGER_DEFAULTS_IMPORT_ENABLED=true
 DEV_USER_IDS=
 CONTROL_GUILD_ID=
 CONTROL_CHANNEL_ID=
@@ -81,6 +84,8 @@ User-facing:
 - `!whoami`
 - `!feedback`
 - `!highlights [count] [scan_limit]`
+- `!trigger <text> <response>`
+- `!forget <text>`
 - `!improve <suggestion>`
 - `!control status|mute|unmute|prompted|strict|normal|remember|forget|privacy`
 
@@ -96,6 +101,7 @@ Developer/admin:
 - Admin/control commands must be protected by `DEV_USER_IDS` and/or `CONTROL_ADMIN_IDS`.
 - Message learning tries to redact obvious secrets before sending learning prompts, but this is not a complete DLP system.
 - User profile context is not injected into model prompts unless `PROFILE_CONTEXT_ENABLED=true`.
+- Custom trigger defaults are imported into the local `PROFILES_DB`; keep seed CSV exports out of git.
 - Image generation uses an external service by default; prompts are sent to that provider.
 - Public deployment should review channel permissions and disable tracking in sensitive channels.
 

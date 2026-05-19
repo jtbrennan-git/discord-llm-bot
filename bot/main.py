@@ -137,6 +137,7 @@ class DiscordLLMBot:
         self.memory = MemoryStore()
         self.feedback = FeedbackTracker()
         self.profiles = UserProfileStore()
+        self._import_default_triggers()
         self.style_guides = StyleGuideStore()
         self.style_learner = StyleGuideLearner(
             self.style_guides,
@@ -209,6 +210,8 @@ class DiscordLLMBot:
 
         channel_id = str(message.channel.id)
         guild_id = str(message.guild.id)
+        if await self._maybe_apply_custom_trigger(message, guild_id):
+            return
         if guild_id in {self.config.control_guild_id, self.config.target_guild_id}:
             logger.info(
                 "Message received guild_id=%s channel_id=%s channel_name=%s author_id=%s content_len=%s",
@@ -758,6 +761,47 @@ class DiscordLLMBot:
         prefixes = [self.config.command_prefix] if isinstance(self.config.command_prefix, str) else list(self.config.command_prefix)
         prefixes.append("/")
         return any(prefix and text.startswith(prefix) for prefix in prefixes)
+
+    def _import_default_triggers(self) -> None:
+        if not self.profiles or not getattr(self.config, "trigger_defaults_import_enabled", True):
+            return
+        csv_path = getattr(self.config, "trigger_defaults_csv", "")
+        if not csv_path:
+            return
+        if not os.path.isabs(csv_path):
+            csv_path = os.path.abspath(csv_path)
+        try:
+            count = self.profiles.import_triggers_csv_once(csv_path, guild_id=self.config.target_guild_id or "")
+        except Exception:
+            logger.exception("Failed to import default triggers from %s", csv_path)
+            return
+        if count:
+            logger.info("Imported %s custom trigger defaults from %s", count, csv_path)
+
+    async def _maybe_apply_custom_trigger(self, message: discord.Message, guild_id: str) -> bool:
+        if not self.profiles or not message.content:
+            return False
+        trigger = self.profiles.find_trigger_match(message.content, guild_id=guild_id)
+        if not trigger:
+            return False
+        response = trigger["reaction"]
+        if self.config.dry_run_actions:
+            logger.info(
+                "DRY_RUN would apply custom trigger channel_id=%s trigger=%s response=%s",
+                str(message.channel.id),
+                trigger["trigger_text"],
+                response,
+            )
+            return True
+        await self._send_tracked_response(message, response)
+        if self.action_audit:
+            self._record_action_audit(
+                message,
+                action_type="custom_trigger",
+                reason=f"{trigger['trigger_text']} -> {response[:120]}",
+                final_action="reply",
+            )
+        return True
 
     def _message_names_bot(self, content: str) -> bool:
         text = (content or "").lower()
@@ -1419,6 +1463,19 @@ class MainCommands(commands.Cog):
                     "`count` defaults to 5 and `scan_limit` defaults to 500."
                 ),
             },
+            "trigger": {
+                "usage": "!trigger <text> <response>",
+                "summary": "Send a saved response when a future message contains text, ignoring case.",
+                "details": (
+                    "Examples: `!trigger \"good bot\" 👍` or `!trigger good bot thanks`. "
+                    "Triggers are stored in the local profile database for this server."
+                ),
+            },
+            "forget": {
+                "usage": "!forget <text>",
+                "summary": "Remove a custom reaction trigger for this server.",
+                "details": "Example: `!forget \"good bot\"`.",
+            },
             "improve": {
                 "usage": "!improve <suggestion>",
                 "summary": "Log a human suggestion for improving the bot.",
@@ -1588,6 +1645,55 @@ class MainCommands(commands.Cog):
             suffix = f" {jump_url}" if jump_url else ""
             lines.append(f"- {item['score']} reacts | {item['author']}: {content}{suffix}")
         await ctx.send("\n".join(lines)[:1900])
+
+    @staticmethod
+    def _parse_trigger_args(raw: str) -> tuple:
+        import shlex
+        text = (raw or "").strip()
+        if not text:
+            return "", ""
+        quoted = re.match(r"""^(['"])(.+?)\1\s+(.+)$""", text, flags=re.DOTALL)
+        if quoted:
+            return quoted.group(2).strip(), quoted.group(3).strip()
+        try:
+            parts = shlex.split(text)
+        except ValueError:
+            parts = text.split()
+        if len(parts) < 2:
+            return "", ""
+        return " ".join(parts[:-1]).strip(), parts[-1].strip()
+
+    @commands.command(name="trigger")
+    async def trigger(self, ctx, *, args: str = ""):
+        if not self.profiles:
+            await ctx.send("Profile storage is not initialized.")
+            return
+        trigger_text, response = self._parse_trigger_args(args)
+        if not trigger_text or not response:
+            await ctx.send("Usage: `!trigger <text> <response>`")
+            return
+        guild_id = str(ctx.guild.id) if ctx.guild else ""
+        try:
+            self.profiles.set_trigger(trigger_text, response, guild_id=guild_id, set_by=str(ctx.author.id))
+        except ValueError as exc:
+            await ctx.send(str(exc))
+            return
+        await ctx.send(f"Trigger set: messages containing `{trigger_text}` will get `{response}`.")
+
+    @commands.command(name="forget")
+    async def forget(self, ctx, *, trigger_text: str = ""):
+        if not self.profiles:
+            await ctx.send("Profile storage is not initialized.")
+            return
+        trigger_text = trigger_text.strip().strip('"').strip("'")
+        if not trigger_text:
+            await ctx.send("Usage: `!forget <text>`")
+            return
+        guild_id = str(ctx.guild.id) if ctx.guild else ""
+        if self.profiles.forget_trigger(trigger_text, guild_id=guild_id):
+            await ctx.send(f"Forgot trigger `{trigger_text}`.")
+        else:
+            await ctx.send(f"No trigger found for `{trigger_text}`.")
 
     @commands.command(name="improve")
     async def improve(self, ctx, *, suggestion: str = ""):

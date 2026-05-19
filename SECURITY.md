@@ -17,6 +17,7 @@ Never commit:
 - SQLite databases
 - persistent logs
 - exported Discord message data
+- trigger seed CSV exports
 
 ## Deployment Guidance
 
@@ -25,6 +26,7 @@ Never commit:
 - Keep admin controls limited to trusted Discord user IDs.
 - Store secrets in the deployment platform's secret manager.
 - Keep `PROFILE_CONTEXT_ENABLED=false` for public multi-server deployments unless user profiles are scoped appropriately for your use case.
+- Keep `PROFILES_DB` on local or private persistent storage; custom reaction triggers are stored there.
 - Review external providers used for LLM and image generation before enabling them.
 
 ## Known Limitations

@@ -8,6 +8,7 @@ import os
 import sqlite3
 import json
 import logging
+import csv
 from contextlib import closing
 from datetime import datetime
 from typing import Optional, Dict, List, Any
@@ -15,6 +16,10 @@ from typing import Optional, Dict, List, Any
 logger = logging.getLogger(__name__)
 
 PROFILES_DB = os.getenv("PROFILES_DB", "/tmp/bot_profiles.db")
+
+
+def _normalize_trigger_text(text: str) -> str:
+    return " ".join((text or "").casefold().split())
 
 
 class UserProfileStore:
@@ -40,7 +45,133 @@ class UserProfileStore:
                     relationships TEXT NOT NULL DEFAULT '{}'
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS custom_triggers (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id TEXT NOT NULL DEFAULT '',
+                    trigger_text TEXT NOT NULL,
+                    trigger_key TEXT NOT NULL,
+                    reaction TEXT NOT NULL,
+                    set_by TEXT NOT NULL DEFAULT '',
+                    set_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(guild_id, trigger_key)
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_custom_triggers_guild
+                ON custom_triggers(guild_id, trigger_key)
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS custom_trigger_imports (
+                    source TEXT NOT NULL,
+                    guild_id TEXT NOT NULL DEFAULT '',
+                    imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    row_count INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(source, guild_id)
+                )
+            """)
             conn.commit()
+
+    def set_trigger(self, trigger_text: str, reaction: str, guild_id: str = "", set_by: str = "") -> None:
+        trigger = (trigger_text or "").strip()
+        emoji = (reaction or "").strip()
+        key = _normalize_trigger_text(trigger)
+        if not key:
+            raise ValueError("Trigger text cannot be empty")
+        if not emoji:
+            raise ValueError("Reaction cannot be empty")
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute("""
+                INSERT INTO custom_triggers (guild_id, trigger_text, trigger_key, reaction, set_by, set_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(guild_id, trigger_key) DO UPDATE SET
+                    trigger_text = excluded.trigger_text,
+                    reaction = excluded.reaction,
+                    set_by = excluded.set_by,
+                    set_at = CURRENT_TIMESTAMP
+            """, (str(guild_id or ""), trigger, key, emoji, str(set_by or "")))
+            conn.commit()
+
+    def forget_trigger(self, trigger_text: str, guild_id: str = "") -> bool:
+        key = _normalize_trigger_text(trigger_text)
+        if not key:
+            return False
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            cur = conn.execute(
+                "DELETE FROM custom_triggers WHERE guild_id = ? AND trigger_key = ?",
+                (str(guild_id or ""), key),
+            )
+            deleted = cur.rowcount > 0
+            conn.commit()
+        return deleted
+
+    def list_triggers(self, guild_id: str = "", limit: int = 25) -> List[Dict[str, Any]]:
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("""
+                SELECT * FROM custom_triggers
+                WHERE guild_id = ?
+                ORDER BY set_at DESC, id DESC
+                LIMIT ?
+            """, (str(guild_id or ""), int(limit))).fetchall()
+        return [dict(row) for row in rows]
+
+    def find_trigger_match(self, content: str, guild_id: str = "") -> Optional[Dict[str, Any]]:
+        text = _normalize_trigger_text(content)
+        if not text:
+            return None
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("""
+                SELECT * FROM custom_triggers
+                WHERE guild_id IN (?, '')
+                ORDER BY LENGTH(trigger_key) DESC, id ASC
+            """, (str(guild_id or ""),)).fetchall()
+        for row in rows:
+            trigger_key = row["trigger_key"]
+            if trigger_key and trigger_key in text:
+                return dict(row)
+        return None
+
+    def import_triggers_csv(self, path: str, guild_id: str = "") -> int:
+        if not path or not os.path.exists(path):
+            return 0
+        count = 0
+        with open(path, newline="", encoding="utf-8-sig", errors="replace") as f:
+            for row in csv.DictReader(f):
+                trigger = (row.get("trigger") or "").strip()
+                reaction = (row.get("response") or "").strip()
+                if not trigger or not reaction:
+                    continue
+                self.set_trigger(
+                    trigger,
+                    reaction,
+                    guild_id=guild_id,
+                    set_by=(row.get("set_by") or row.get("command_word") or "csv"),
+                )
+                count += 1
+        return count
+
+    def import_triggers_csv_once(self, path: str, guild_id: str = "") -> int:
+        if not path or not os.path.exists(path):
+            return 0
+        source = os.path.abspath(path)
+        guild = str(guild_id or "")
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            row = conn.execute(
+                "SELECT row_count FROM custom_trigger_imports WHERE source = ? AND guild_id = ?",
+                (source, guild),
+            ).fetchone()
+        if row:
+            return 0
+        count = self.import_triggers_csv(source, guild_id=guild)
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute("""
+                INSERT OR REPLACE INTO custom_trigger_imports (source, guild_id, row_count, imported_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            """, (source, guild, count))
+            conn.commit()
+        return count
 
     def upsert_user(self, user_id: str, display_name: str):
         """Ensure a user exists in the store. Creates or updates name/timestamps."""

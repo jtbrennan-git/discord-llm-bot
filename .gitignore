@@ -27,6 +27,7 @@ htmlcov/
 *.log
 *.bak
 .hermes/
+fellasbot_triggers_active.csv
 
 # IDE and OS
 .vscode/

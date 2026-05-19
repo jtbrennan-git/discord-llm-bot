@@ -328,6 +328,7 @@ class TestResponseSending:
         self.bot.config = MagicMock()
         self.bot.config.followup_window_messages = 4
         self.bot.config.followup_window_seconds = 300
+        self.bot.config.dry_run_actions = False
         self.bot.bot = MagicMock()
         self.bot.bot.user = MagicMock()
         self.bot.bot.user.id = 42
@@ -423,6 +424,21 @@ class TestResponseSending:
         assert self.bot._is_command_message("/control mute")
         assert not self.bot._is_command_message("testbot help")
         assert not self.bot._is_command_message("that was !weird")
+
+    @pytest.mark.asyncio
+    async def test_custom_trigger_sends_stored_response(self, tmp_path):
+        self.bot.profiles = UserProfileStore(str(tmp_path / "profiles.db"))
+        self.bot.profiles.set_trigger("good bot", "thanks boss", guild_id="g1")
+        self.bot.action_audit = None
+        self.bot._send_tracked_response = AsyncMock()
+        message = MagicMock()
+        message.content = "GOOD BOT"
+        message.channel.id = "c1"
+
+        handled = await self.bot._maybe_apply_custom_trigger(message, "g1")
+
+        assert handled is True
+        self.bot._send_tracked_response.assert_awaited_once_with(message, "thanks boss")
 
 
 class TestMemoryStore:
@@ -918,3 +934,39 @@ class TestUserProfileStore:
         self.store.reset_profile("123")
         facts = self.store.get_facts("123")
         assert len(facts) == 0
+
+    def test_custom_trigger_matches_case_insensitive_substring(self):
+        self.store.set_trigger("Good Bot", "👍", guild_id="g1", set_by="u1")
+
+        match = self.store.find_trigger_match("that was a GOOD bot moment", guild_id="g1")
+
+        assert match["trigger_text"] == "Good Bot"
+        assert match["reaction"] == "👍"
+
+    def test_custom_trigger_forget_is_scoped_to_guild(self):
+        self.store.set_trigger("good bot", "👍", guild_id="g1")
+        self.store.set_trigger("good bot", "💀", guild_id="g2")
+
+        assert self.store.forget_trigger("GOOD BOT", guild_id="g1") is True
+
+        assert self.store.find_trigger_match("good bot", guild_id="g1") is None
+        assert self.store.find_trigger_match("good bot", guild_id="g2")["reaction"] == "💀"
+
+    def test_import_triggers_csv(self, tmp_path):
+        path = tmp_path / "triggers.csv"
+        path.write_text("trigger,response,set_by\nhello,👋,seed\n", encoding="utf-8")
+
+        imported = self.store.import_triggers_csv(str(path), guild_id="g1")
+
+        assert imported == 1
+        assert self.store.find_trigger_match("HELLO there", guild_id="g1")["reaction"] == "👋"
+
+    def test_import_triggers_csv_once_does_not_overwrite_later_changes(self, tmp_path):
+        path = tmp_path / "triggers.csv"
+        path.write_text("trigger,response,set_by\nhello,👋,seed\n", encoding="utf-8")
+
+        assert self.store.import_triggers_csv_once(str(path), guild_id="g1") == 1
+        self.store.set_trigger("hello", "👍", guild_id="g1")
+        assert self.store.import_triggers_csv_once(str(path), guild_id="g1") == 0
+
+        assert self.store.find_trigger_match("hello", guild_id="g1")["reaction"] == "👍"

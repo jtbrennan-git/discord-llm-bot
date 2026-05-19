@@ -75,6 +75,8 @@ class BotConfig:
         self.spontaneous_idle_ramp_seconds: int = int(os.getenv("SPONTANEOUS_IDLE_RAMP_SECONDS", "7200"))
         self.followup_window_messages: int = int(os.getenv("FOLLOWUP_WINDOW_MESSAGES", "4"))
         self.followup_window_seconds: int = int(os.getenv("FOLLOWUP_WINDOW_SECONDS", "300"))
+        self.trigger_defaults_csv: str = os.getenv("TRIGGER_DEFAULTS_CSV", "fellasbot_triggers_active.csv").strip()
+        self.trigger_defaults_import_enabled: bool = os.getenv("TRIGGER_DEFAULTS_IMPORT_ENABLED", "true").lower() == "true"
 
         # Validate
         if not self.discord_token:
