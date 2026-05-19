@@ -246,11 +246,14 @@ class TestBotNameDetection:
     def test_detects_exact_name_case_insensitive(self):
         assert self.bot._message_names_bot("hey TESTBOT what do you think")
 
-    def test_detects_spaced_name(self):
-        assert self.bot._message_names_bot("test bot get in here")
+    def test_ignores_spaced_near_match(self):
+        assert not self.bot._message_names_bot("test bot get in here")
 
-    def test_detects_small_typo(self):
-        assert self.bot._message_names_bot("tesbot you seeing this")
+    def test_ignores_small_typo(self):
+        assert not self.bot._message_names_bot("tesbot you seeing this")
+
+    def test_detects_exact_name_with_punctuation_boundary(self):
+        assert self.bot._message_names_bot("testbot, you seeing this")
 
     def test_ignores_unrelated_text(self):
         assert not self.bot._message_names_bot("the channel is quiet today")

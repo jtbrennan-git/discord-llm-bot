@@ -279,9 +279,6 @@ class DiscordLLMBot:
             self._record_action_audit(message, action_type="skip", reason=f"user response mode is {user_response_mode}")
             return
 
-        if await self._maybe_handle_implicit_followup(message):
-            return
-
         channel_state = self.channel_states.record_inbound(channel_id)
         self.channel_states.decay_thread_depth(channel_id)
 
@@ -462,10 +459,10 @@ class DiscordLLMBot:
         await self._generate_and_execute(message, content, for_spontaneous=False)
 
     async def _handle_name_call(self, message: discord.Message):
-        """Ask the LLM whether a fuzzy name call merits a response."""
+        """Ask the LLM whether an exact name call merits a response."""
         controls = self._channel_controls(str(message.channel.id))
-        if controls["quiet_enabled"] or not controls["spontaneous_enabled"]:
-            self._record_action_audit(message, action_type="skip", reason="name call while quiet/spontaneous disabled")
+        if controls["quiet_enabled"]:
+            self._record_action_audit(message, action_type="skip", reason="name call while channel quiet")
             return
         prompt = (
             f"Someone may have referred to you by name as {self._bot_identity()}.\n"
@@ -475,7 +472,7 @@ class DiscordLLMBot:
             f"Message: {message.content}"
         )
         await self._generate_and_execute(message, prompt, for_spontaneous=True)
-        self._record_action_audit(message, action_type="name_call", reason="fuzzy bot name detected")
+        self._record_action_audit(message, action_type="name_call", reason="exact bot name detected")
 
     async def _maybe_handle_implicit_followup(self, message: discord.Message) -> bool:
         if isinstance(message.channel, discord.DMChannel):
@@ -739,7 +736,7 @@ class DiscordLLMBot:
         for name in names:
             if not name:
                 continue
-            normalized = self._normalize_name_text(str(name))
+            normalized = re.sub(r"\s+", " ", str(name).strip().lower())
             if normalized and normalized not in seen:
                 seen.add(normalized)
                 candidates.append(normalized)
@@ -753,49 +750,17 @@ class DiscordLLMBot:
         prefixes.append("/")
         return any(prefix and text.startswith(prefix) for prefix in prefixes)
 
-    @staticmethod
-    def _normalize_name_text(text: str) -> str:
-        return re.sub(r"[^a-z0-9]+", "", text.lower())
-
-    @staticmethod
-    def _edit_distance_limited(a: str, b: str, limit: int = 2) -> int:
-        if abs(len(a) - len(b)) > limit:
-            return limit + 1
-        previous = list(range(len(b) + 1))
-        for i, ca in enumerate(a, 1):
-            current = [i]
-            row_min = current[0]
-            for j, cb in enumerate(b, 1):
-                cost = 0 if ca == cb else 1
-                value = min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost)
-                current.append(value)
-                row_min = min(row_min, value)
-            if row_min > limit:
-                return limit + 1
-            previous = current
-        return previous[-1]
-
     def _message_names_bot(self, content: str) -> bool:
-        text = self._normalize_name_text(content)
-        if not text:
+        text = (content or "").lower()
+        if not text.strip():
             return False
-        words = [self._normalize_name_text(w) for w in re.findall(r"[A-Za-z0-9]+", content)]
-        words = [w for w in words if w]
-        compact_windows = set(words)
-        for size in (2, 3):
-            for i in range(0, max(0, len(words) - size + 1)):
-                compact_windows.add("".join(words[i:i + size]))
-
         for candidate in self._bot_name_candidates():
+            candidate = candidate.strip().lower()
             if len(candidate) < 3:
                 continue
-            typo_limit = 1 if len(candidate) < 7 else 2
-            if candidate in text:
+            pattern = r"(?<![a-z0-9])" + re.escape(candidate) + r"(?![a-z0-9])"
+            if re.search(pattern, text):
                 return True
-            for window in compact_windows:
-                if abs(len(window) - len(candidate)) <= typo_limit:
-                    if self._edit_distance_limited(window, candidate, typo_limit) <= typo_limit:
-                        return True
         return False
 
     def _reset_channel_counters(self, channel_id: str):
