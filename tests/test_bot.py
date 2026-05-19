@@ -430,7 +430,7 @@ class TestResponseSending:
         self.bot.profiles = UserProfileStore(str(tmp_path / "profiles.db"))
         self.bot.profiles.set_trigger("good bot", "thanks boss", guild_id="g1")
         self.bot.action_audit = None
-        self.bot._send_tracked_response = AsyncMock()
+        self.bot._send_custom_trigger_response = AsyncMock()
         message = MagicMock()
         message.content = "GOOD BOT"
         message.channel.id = "c1"
@@ -438,7 +438,33 @@ class TestResponseSending:
         handled = await self.bot._maybe_apply_custom_trigger(message, "g1")
 
         assert handled is True
-        self.bot._send_tracked_response.assert_awaited_once_with(message, "thanks boss")
+        self.bot._send_custom_trigger_response.assert_awaited_once_with(message, "thanks boss")
+
+    def test_legacy_image_response_url_strips_groupme_image_flag(self):
+        url = "https://i.groupme.com/600x600.jpeg.example -i"
+
+        assert DiscordLLMBot._legacy_image_response_url(url) == "https://i.groupme.com/600x600.jpeg.example"
+
+    def test_legacy_image_response_url_ignores_non_groupme_or_plain_url(self):
+        assert DiscordLLMBot._legacy_image_response_url("https://example.com/a.jpg -i") is None
+        assert DiscordLLMBot._legacy_image_response_url("https://i.groupme.com/a.jpg") is None
+
+    @pytest.mark.asyncio
+    async def test_custom_trigger_embeds_legacy_groupme_image(self):
+        self.trigger.channel = self.FakeChannel()
+        self.bot._download_external_file = AsyncMock(return_value=(b"image-bytes", "image/jpeg"))
+        self.bot._channel_has_newer_user_message = AsyncMock(return_value=False)
+
+        await self.bot._send_custom_trigger_response(
+            self.trigger,
+            "https://i.groupme.com/600x600.jpeg.example -i",
+        )
+
+        content, kwargs = self.trigger.channel.sent[0]
+        assert content == ""
+        assert "file" in kwargs
+        assert "embed" in kwargs
+        assert kwargs["embed"].image.url.startswith("attachment://trigger-image")
 
 
 class TestMemoryStore:

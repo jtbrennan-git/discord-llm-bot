@@ -12,10 +12,14 @@ import asyncio
 import threading
 import random
 import re
+import io
+import mimetypes
+from urllib.parse import urlparse
 from typing import Optional, Dict, List
 
 import discord
 from discord.ext import commands
+import httpx
 
 from config.config import BotConfig
 from utils.llm import LLMClient, LLMConfig, DEFAULT_SYSTEM_PROMPT, ParsedResponse
@@ -793,7 +797,7 @@ class DiscordLLMBot:
                 response,
             )
             return True
-        await self._send_tracked_response(message, response)
+        await self._send_custom_trigger_response(message, response)
         if self.action_audit:
             self._record_action_audit(
                 message,
@@ -802,6 +806,57 @@ class DiscordLLMBot:
                 final_action="reply",
             )
         return True
+
+    @staticmethod
+    def _legacy_image_response_url(response: str) -> Optional[str]:
+        text = (response or "").strip()
+        match = re.match(r"^(https?://\S+)\s+-i\s*$", text, flags=re.IGNORECASE)
+        if not match:
+            return None
+        url = match.group(1)
+        host = urlparse(url).netloc.lower()
+        if host.endswith("groupme.com"):
+            return url
+        return None
+
+    @staticmethod
+    def _filename_for_url(url: str, content_type: str = "") -> str:
+        parsed = urlparse(url)
+        path_name = os.path.basename(parsed.path)
+        ext = os.path.splitext(path_name)[1]
+        if not ext or len(ext) > 8:
+            ext = mimetypes.guess_extension((content_type or "").split(";")[0].strip()) or ".jpg"
+        return "trigger-image" + ext
+
+    async def _download_external_file(self, url: str, *, max_bytes: int = 8 * 1024 * 1024) -> tuple:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+        content = response.content
+        if len(content) > max_bytes:
+            raise ValueError("Downloaded trigger image is too large for Discord upload")
+        return content, response.headers.get("content-type", "")
+
+    async def _send_custom_trigger_response(self, trigger_message: discord.Message, response: str) -> discord.Message:
+        image_url = self._legacy_image_response_url(response)
+        if not image_url:
+            return await self._send_tracked_response(trigger_message, response)
+
+        try:
+            content, content_type = await self._download_external_file(image_url)
+            filename = self._filename_for_url(image_url, content_type)
+            file = discord.File(io.BytesIO(content), filename=filename)
+            embed = discord.Embed()
+            embed.set_image(url=f"attachment://{filename}")
+            kwargs = {"file": file, "embed": embed}
+            if await self._channel_has_newer_user_message(trigger_message):
+                kwargs["reference"] = trigger_message
+            sent = await self._send_tracked(trigger_message.channel, "", **kwargs)
+            self._activate_followup_window(str(trigger_message.channel.id), str(sent.id), image_url)
+            return sent
+        except Exception:
+            logger.exception("Failed to embed legacy GroupMe image response url=%s", image_url)
+            return await self._send_tracked_response(trigger_message, image_url)
 
     def _message_names_bot(self, content: str) -> bool:
         text = (content or "").lower()
