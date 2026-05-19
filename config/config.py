@@ -73,7 +73,9 @@ class BotConfig:
         self.spontaneous_max_thread_depth: int = int(os.getenv("SPONTANEOUS_MAX_THREAD_DEPTH", "4"))
         self.spontaneous_idle_trigger_seconds: int = int(os.getenv("SPONTANEOUS_IDLE_TRIGGER_SECONDS", "1800"))
         self.spontaneous_idle_min_messages: int = int(os.getenv("SPONTANEOUS_IDLE_MIN_MESSAGES", "2"))
-        self.spontaneous_chance_cap: float = float(os.getenv("SPONTANEOUS_CHANCE_CAP", "0"))
+        self.spontaneous_chance_cap: float = float(os.getenv("SPONTANEOUS_CHANCE_CAP", "0.033"))
+        self.spontaneous_react_boost_per_reaction: float = float(os.getenv("SPONTANEOUS_REACT_BOOST_PER_REACTION", "0.02"))
+        self.spontaneous_react_boost_cap: float = float(os.getenv("SPONTANEOUS_REACT_BOOST_CAP", "0.20"))
         self.spontaneous_idle_ramp_seconds: int = int(os.getenv("SPONTANEOUS_IDLE_RAMP_SECONDS", "7200"))
         self.followup_window_messages: int = int(os.getenv("FOLLOWUP_WINDOW_MESSAGES", "4"))
         self.followup_window_seconds: int = int(os.getenv("FOLLOWUP_WINDOW_SECONDS", "300"))
@@ -98,6 +100,10 @@ class BotConfig:
 
         if not 0.0 <= self.spontaneous_chance_cap <= 1.0:
             raise ValueError("SPONTANEOUS_CHANCE_CAP must be between 0.0 and 1.0")
+        if not 0.0 <= self.spontaneous_react_boost_per_reaction <= 1.0:
+            raise ValueError("SPONTANEOUS_REACT_BOOST_PER_REACTION must be between 0.0 and 1.0")
+        if not 0.0 <= self.spontaneous_react_boost_cap <= 1.0:
+            raise ValueError("SPONTANEOUS_REACT_BOOST_CAP must be between 0.0 and 1.0")
 
         positive_ints = {
             "STYLE_LEARNING_INTERVAL": self.style_learning_interval,

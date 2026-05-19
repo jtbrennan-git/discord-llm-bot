@@ -339,12 +339,19 @@ class TestCustomEmoji:
 
         assert ":thonk:" in context
         assert "Server custom reactions" in context
+        assert "Prefer a fitting custom emoji" in context
 
     def test_resolves_colon_custom_emoji_case_insensitive(self):
         assert self.bot._resolve_custom_emoji(self.guild, ":ThOnK:") is self.emoji
 
     def test_plain_unicode_is_not_custom_emoji(self):
         assert self.bot._resolve_custom_emoji(self.guild, "💀") is None
+
+    def test_custom_emoji_is_bandwagon_eligible(self):
+        assert self.bot._bandwagon_eligible_emoji(self.emoji)
+
+    def test_default_unicode_not_in_bandwagon_set_is_not_eligible(self):
+        assert not self.bot._bandwagon_eligible_emoji("x")
 
 
 class TestResponseSending:
@@ -483,6 +490,14 @@ class TestResponseSending:
         assert self.bot._is_command_message("/control mute")
         assert not self.bot._is_command_message("testbot help")
         assert not self.bot._is_command_message("that was !weird")
+
+    def test_reaction_probability_boost_scales_and_caps(self):
+        self.bot.config.spontaneous_react_boost_per_reaction = 0.02
+        self.bot.config.spontaneous_react_boost_cap = 0.05
+        message = MagicMock()
+        message.reactions = [MagicMock(count=1), MagicMock(count=10)]
+
+        assert self.bot._reaction_probability_boost(message) == 0.05
 
     @pytest.mark.asyncio
     async def test_dm_command_is_processed_before_guild_gate(self):
@@ -896,7 +911,7 @@ class TestActionAuditStore:
         assert defaults["learning_enabled"] is True
         assert defaults["quiet_enabled"] is False
         assert defaults["tracking_enabled"] is True
-        assert defaults["spontaneous_rate"] == 0.0
+        assert defaults["spontaneous_rate"] == 1.0
         assert defaults["mode"] == "normal"
 
         self.store.set_channel_control("c1", "quiet", True)
@@ -939,7 +954,7 @@ class TestActionAuditStore:
         migrated = ActionAuditStore(path)
 
         assert migrated.get_channel_controls("c1")["tracking_enabled"] is True
-        assert migrated.get_channel_controls("c1")["spontaneous_rate"] == 0.0
+        assert migrated.get_channel_controls("c1")["spontaneous_rate"] == 1.0
         assert migrated.get_channel_controls("c1")["mode"] == "normal"
 
     def test_spontaneous_rate_validates_range(self):

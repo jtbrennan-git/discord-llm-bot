@@ -634,6 +634,16 @@ class DiscordLLMBot:
         if topic_started:
             return
 
+        fresh_msg = None
+        try:
+            fresh_msg = await message.channel.fetch_message(message.id)
+        except Exception:
+            pass
+
+        reaction_boost = self._reaction_probability_boost(fresh_msg)
+        if reaction_boost:
+            chance = min(1.0, chance + reaction_boost)
+
         roll = random.random()
         if roll > chance:
             self._record_action_audit(
@@ -649,12 +659,6 @@ class DiscordLLMBot:
         if not context:
             self._record_action_audit(message, action_type="skip", reason="no context for spontaneous response")
             return
-
-        fresh_msg = None
-        try:
-            fresh_msg = await message.channel.fetch_message(message.id)
-        except Exception:
-            pass
 
         if fresh_msg:
             bandwagon_triggered = await self._check_bandwagon(message, fresh_msg)
@@ -731,8 +735,9 @@ class DiscordLLMBot:
         listed = ", ".join(f":{name}:" for name in names[:60])
         return (
             "\n\n## Server custom reactions\n"
-            "You may use these server custom emoji in [REACT] by writing the exact colon name. "
-            "Only use one when it fits better than a standard emoji.\n"
+            "Before choosing any [REACT], evaluate these custom server emoji first by name. "
+            "Prefer a fitting custom emoji over a standard Unicode emoji; use standard emoji only when no custom emoji fits. "
+            "Write the exact colon name.\n"
             f"{listed}"
         )
 
@@ -1076,7 +1081,7 @@ class DiscordLLMBot:
                 "spontaneous_enabled": True,
                 "quiet_enabled": False,
                 "tracking_enabled": True,
-                "spontaneous_rate": 0.0,
+                "spontaneous_rate": 1.0,
                 "mode": "normal",
             }
         return self.action_audit.get_channel_controls(channel_id)
@@ -1404,14 +1409,15 @@ class DiscordLLMBot:
 
         counts = {}
         for r in fresh_msg.reactions:
-            emoji = str(r.emoji)
-            if emoji in self.BANDWAGON_EMOJI:
-                try:
-                    n = sum(1 async for u in r.users() if u.id != self.bot.user.id)
-                except Exception:
-                    n = max(0, r.count - 1)
-                if n > 0:
-                    counts[emoji] = n
+            emoji = r.emoji
+            if not self._bandwagon_eligible_emoji(emoji):
+                continue
+            try:
+                n = sum(1 async for u in r.users() if u.id != self.bot.user.id)
+            except Exception:
+                n = max(0, r.count - 1)
+            if n > 0:
+                counts[emoji] = n
 
         if not counts:
             return False
@@ -1428,6 +1434,26 @@ class DiscordLLMBot:
             except discord.HTTPException:
                 pass
         return False
+
+    def _bandwagon_eligible_emoji(self, emoji) -> bool:
+        text = str(emoji)
+        if text in self.BANDWAGON_EMOJI:
+            return True
+        if isinstance(emoji, (discord.Emoji, discord.PartialEmoji)):
+            return True
+        return bool(getattr(emoji, "id", None))
+
+    def _reaction_probability_boost(self, fresh_msg) -> float:
+        if not fresh_msg:
+            return 0.0
+        total = 0
+        for reaction in getattr(fresh_msg, "reactions", []) or []:
+            total += max(0, int(getattr(reaction, "count", 0) or 0))
+        if total <= 0:
+            return 0.0
+        per = max(0.0, float(getattr(self.config, "spontaneous_react_boost_per_reaction", 0.02)))
+        cap = max(0.0, min(1.0, float(getattr(self.config, "spontaneous_react_boost_cap", 0.20))))
+        return min(cap, total * per)
 
     async def on_guild_join(self, guild: discord.Guild):
         logger.info(f"Joined new guild: {guild.name}")
