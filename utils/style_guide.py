@@ -202,6 +202,7 @@ class StyleGuideLearner:
         guild_id: Optional[str],
         recent_messages: List[Tuple[str, str, str]],
         llm_generate: LLMGenerate,
+        bot_name: str = "the bot",
     ) -> None:
         messages = sanitize_recent_messages(recent_messages)
         if len(messages) < 25:
@@ -214,6 +215,10 @@ class StyleGuideLearner:
             "common_phrases, humor_notes, energy_level, confidence.\n"
             "Do not include private personal details. Do not instruct imitation of a named person. "
             "Do not preserve hateful or harassing language as something to copy.\n"
+            f"The bot is named {bot_name}. If users insult, tease, command, or mock {bot_name}, "
+            "treat that as context the bot should understand, not as behavior the bot should copy toward users. "
+            "Describe how the bot should respond from its own position in the group, not as if it were one of the users talking to the bot. "
+            "Avoid do_patterns that tell the bot to mock itself, mock users as bots, or repeat hostility aimed at the bot.\n"
             "Lists must contain at most five short strings. energy_level must be low, neutral, or high.\n\n"
             f"Conversation:\n{convo}"
         )

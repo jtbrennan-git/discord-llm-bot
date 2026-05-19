@@ -195,6 +195,16 @@ class FeedbackStore:
                    LIMIT 5"""
             ).fetchall()
 
+            # Neutral here usually means ambiguous/low-weight acknowledgement, not criticism.
+            neutral_reactions = conn.execute(
+                """SELECT reaction, COUNT(*)
+                   FROM feedback
+                   WHERE sentiment = 'neutral'
+                   GROUP BY reaction
+                   ORDER BY COUNT(*) DESC
+                   LIMIT 5"""
+            ).fetchall()
+
         summary_parts = []
         sentiment_str = ", ".join([f"{s}: {c}" for s, c in sentiment_counts])
         summary_parts.append(f"Total feedback breakdown: {sentiment_str}")
@@ -208,6 +218,13 @@ class FeedbackStore:
         if top_reactions:
             summary_parts.append("\nReactions users liked most:")
             for reaction, count in top_reactions:
+                summary_parts.append(f"  - {reaction} (used {count} times)")
+
+        if neutral_reactions:
+            summary_parts.append(
+                "\nWeak positive/ambiguous reactions users used. Treat these as lower-confidence approval or acknowledgement, not negative feedback:"
+            )
+            for reaction, count in neutral_reactions:
                 summary_parts.append(f"  - {reaction} (used {count} times)")
 
         return "\n".join(summary_parts)

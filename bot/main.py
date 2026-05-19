@@ -1165,7 +1165,13 @@ class DiscordLLMBot:
             exclude_author_id=str(self.bot.user.id) if self.bot and self.bot.user else None,
         )
         if job.get("style") and self.style_learner:
-            await self.style_learner.learn_from_recent(channel_id, job.get("guild_id"), recent, self._llm_generate)
+            await self.style_learner.learn_from_recent(
+                channel_id,
+                job.get("guild_id"),
+                recent,
+                self._llm_generate,
+                bot_name=self._bot_identity(),
+            )
         if job.get("topics") and self.topic_learner:
             await self.topic_learner.learn_from_recent(channel_id, job.get("guild_id"), recent, self._llm_generate)
 
@@ -1184,7 +1190,13 @@ class DiscordLLMBot:
             and self.style_learner
             and self.style_learner.should_learn(count)
         ):
-            await self.style_learner.learn_from_recent(channel_id, guild_id, recent, self._llm_generate)
+            await self.style_learner.learn_from_recent(
+                channel_id,
+                guild_id,
+                recent,
+                self._llm_generate,
+                bot_name=self._bot_identity(),
+            )
         if (
             self.config.topic_learning_enabled
             and self.topic_learner
@@ -2186,7 +2198,7 @@ class MainCommands(commands.Cog):
             if target in {"style", "all"} and self.style_guides and self.memory:
                 recent = self.memory.get_recent(cid, limit=getattr(self.config, "style_learning_context_limit", 80))
                 learner = StyleGuideLearner(self.style_guides, interval=1, context_limit=getattr(self.config, "style_learning_context_limit", 80))
-                await learner.learn_from_recent(cid, gid, recent, self.llm_client.generate)
+                await learner.learn_from_recent(cid, gid, recent, self.llm_client.generate, bot_name=self.bot.user.display_name)
             if target in {"topics", "all"} and self.topic_log and self.memory:
                 recent = self.memory.get_recent(cid, limit=getattr(self.config, "topic_learning_context_limit", 60))
                 learner = TopicLearner(self.topic_log, interval=1, context_limit=getattr(self.config, "topic_learning_context_limit", 60))
