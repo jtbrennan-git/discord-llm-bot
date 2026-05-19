@@ -1,28 +1,28 @@
-app = 'discord-llm-bot'
+app = 'friend-bot-7214'
 primary_region = 'lhr'
 
 [build]
 
 [env]
   PORT = '8080'
-  BOT_LOG_PATH = '/data/discord_llm_bot.log'
+  BOT_LOG_PATH = '/data/fellasbot.log'
   BOT_LOG_MAX_BYTES = '5242880'
   BOT_LOG_BACKUP_COUNT = '10'
   IMPROVEMENTS_LOG = '/data/bot_improvements.log'
   MEMORY_DB_PATH = '/data/bot_memory.db'
   PROFILES_DB = '/data/bot_profiles.db'
   FEEDBACK_DB_PATH = '/data/bot_feedback.db'
-  ACTION_AUDIT_DB_PATH = '/data/discord_llm_bot_actions.db'
-  STYLE_GUIDE_DB_PATH = '/data/discord_llm_bot_style.db'
-  TOPIC_LOG_DB_PATH = '/data/discord_llm_bot_topics.db'
+  ACTION_AUDIT_DB_PATH = '/data/fellasbot_actions.db'
+  STYLE_GUIDE_DB_PATH = '/data/fellasbot_style.db'
+  TOPIC_LOG_DB_PATH = '/data/fellasbot_topics.db'
   CHANNEL_STATE_DB = '/data/bot_channel_state.db'
-  TOPIC_STARTER_CHANCE = '0'
-  SPONTANEOUS_CHANCE_CAP = '0'
   HERMES_HOME = '/data/hermes'
   HERMES_PROFILE_DIR = '/data/hermes/profiles'
+  TRIGGER_DEFAULTS_CSV = 'fellasbot_triggers_active.csv'
+  TRIGGER_DEFAULTS_IMPORT_ENABLED = 'true'
 
 [mounts]
-  source = 'discord_llm_bot_data'
+  source = 'fellasbot_data'
   destination = '/data'
 
 [[services]]
