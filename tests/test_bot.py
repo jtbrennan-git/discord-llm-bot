@@ -912,18 +912,27 @@ class TestActionAuditStore:
         assert defaults["quiet_enabled"] is False
         assert defaults["tracking_enabled"] is True
         assert defaults["spontaneous_rate"] == 1.0
+        assert defaults["spontaneous_react_enabled"] is True
+        assert defaults["spontaneous_reply_enabled"] is False
+        assert defaults["spontaneous_react_rate"] == 1.0
+        assert defaults["spontaneous_reply_rate"] == 0.0
         assert defaults["mode"] == "normal"
 
         self.store.set_channel_control("c1", "quiet", True)
         self.store.set_channel_control("c1", "starters", False)
         self.store.set_channel_control("c1", "tracking", False)
         self.store.set_spontaneous_rate("c1", 0.35)
+        self.store.set_channel_control("c1", "spontaneous_reply", True)
+        self.store.set_spontaneous_reply_rate("c1", 0.2)
         controls = self.store.get_channel_controls("c1")
 
         assert controls["quiet_enabled"] is True
         assert controls["starters_enabled"] is False
         assert controls["tracking_enabled"] is False
         assert controls["spontaneous_rate"] == 0.35
+        assert controls["spontaneous_react_rate"] == 0.35
+        assert controls["spontaneous_reply_enabled"] is True
+        assert controls["spontaneous_reply_rate"] == 0.2
 
     def test_channel_mode_presets(self):
         self.store.set_channel_mode("c1", "ignore")
@@ -933,6 +942,8 @@ class TestActionAuditStore:
         assert controls["tracking_enabled"] is False
         assert controls["learning_enabled"] is False
         assert controls["spontaneous_enabled"] is False
+        assert controls["spontaneous_react_enabled"] is False
+        assert controls["spontaneous_reply_enabled"] is False
 
         self.store.set_channel_mode("c1", "no-learning")
         controls = self.store.get_channel_controls("c1")
@@ -941,6 +952,8 @@ class TestActionAuditStore:
         assert controls["tracking_enabled"] is True
         assert controls["learning_enabled"] is False
         assert controls["spontaneous_enabled"] is True
+        assert controls["spontaneous_react_enabled"] is True
+        assert controls["spontaneous_reply_enabled"] is False
 
     def test_channel_controls_migrates_added_columns(self, tmp_path):
         path = str(tmp_path / "actions.db")
@@ -948,6 +961,10 @@ class TestActionAuditStore:
         with sqlite3.connect(path) as conn:
             conn.execute("ALTER TABLE channel_controls DROP COLUMN tracking_enabled")
             conn.execute("ALTER TABLE channel_controls DROP COLUMN spontaneous_rate")
+            conn.execute("ALTER TABLE channel_controls DROP COLUMN spontaneous_react_enabled")
+            conn.execute("ALTER TABLE channel_controls DROP COLUMN spontaneous_reply_enabled")
+            conn.execute("ALTER TABLE channel_controls DROP COLUMN spontaneous_react_rate")
+            conn.execute("ALTER TABLE channel_controls DROP COLUMN spontaneous_reply_rate")
             conn.execute("ALTER TABLE channel_controls DROP COLUMN mode")
             conn.commit()
 
@@ -955,6 +972,10 @@ class TestActionAuditStore:
 
         assert migrated.get_channel_controls("c1")["tracking_enabled"] is True
         assert migrated.get_channel_controls("c1")["spontaneous_rate"] == 1.0
+        assert migrated.get_channel_controls("c1")["spontaneous_react_enabled"] is True
+        assert migrated.get_channel_controls("c1")["spontaneous_reply_enabled"] is False
+        assert migrated.get_channel_controls("c1")["spontaneous_react_rate"] == 1.0
+        assert migrated.get_channel_controls("c1")["spontaneous_reply_rate"] == 0.0
         assert migrated.get_channel_controls("c1")["mode"] == "normal"
 
     def test_spontaneous_rate_validates_range(self):

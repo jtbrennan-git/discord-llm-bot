@@ -515,7 +515,7 @@ class DiscordLLMBot:
             return False
 
         controls = self._channel_controls(channel_id)
-        if controls["quiet_enabled"] or not controls["spontaneous_enabled"]:
+        if controls["quiet_enabled"] or not controls.get("spontaneous_reply_enabled", False):
             return False
 
         prompt = (
@@ -586,12 +586,12 @@ class DiscordLLMBot:
         controls = self._channel_controls(channel_id)
         channel_state = self.channel_states.get(channel_id)
 
-        if controls["quiet_enabled"] or not controls["spontaneous_enabled"]:
-            self._record_action_audit(message, action_type="skip", reason="channel quiet/spontaneous disabled")
+        if controls["quiet_enabled"] or not controls.get("spontaneous_react_enabled", controls.get("spontaneous_enabled", True)):
+            self._record_action_audit(message, action_type="skip", reason="channel quiet/spontaneous react disabled")
             return
-        rate = max(0.0, min(2.0, float(controls.get("spontaneous_rate", 0.0))))
+        rate = max(0.0, min(2.0, float(controls.get("spontaneous_react_rate", controls.get("spontaneous_rate", 0.0)))))
         if rate <= 0:
-            self._record_action_audit(message, action_type="skip", reason="spontaneous rate is zero")
+            self._record_action_audit(message, action_type="skip", reason="spontaneous react rate is zero")
             return
         min_messages = self.config.spontaneous_min_messages_since_action
         now = time.time()
@@ -655,11 +655,6 @@ class DiscordLLMBot:
             )
             return
 
-        context = self._build_context(channel_id, for_spontaneous=True)
-        if not context:
-            self._record_action_audit(message, action_type="skip", reason="no context for spontaneous response")
-            return
-
         if fresh_msg:
             bandwagon_triggered = await self._check_bandwagon(message, fresh_msg)
             if bandwagon_triggered:
@@ -673,14 +668,46 @@ class DiscordLLMBot:
                 self._reset_channel_counters(channel_id)
                 return
 
-        await self._generate_and_execute(message, None, for_spontaneous=True)
+        context = self._build_context(channel_id, for_spontaneous=True)
+        prompt = (
+            "Choose whether to add exactly one reaction to the latest message. "
+            "Do not write a text reply. Return only [REACT: emoji] or [SILENT]. "
+            "Evaluate custom server emoji before standard Unicode emoji."
+        )
+        raw = await self._llm_generate(
+            prompt,
+            system_prompt=self._build_system_prompt(channel_id),
+            chat_context=context,
+        )
+        parsed = self.llm_client.parse_response(raw)
+        if parsed.action != "REACT":
+            self._record_action_audit(
+                message,
+                action_type="silent",
+                reason="spontaneous react model chose non-react",
+                probability=chance,
+                roll=roll,
+                final_action="silent",
+            )
+            return
+        emoji = parsed.content or "👍"
+        if self.config.dry_run_actions:
+            logger.info("DRY_RUN would spontaneous-react with %s in channel_id=%s", emoji, channel_id)
+            self._record_action_audit(message, action_type="dry_run_spontaneous_react", reason=emoji)
+            self._reset_channel_counters(channel_id)
+            return
+        actual_emoji = await self._add_reaction(message, emoji)
+        if str(message.id) not in self.bot_message_map:
+            self.bot_message_map[str(message.id)] = f"[spontaneously reacted with {actual_emoji}]"
         self._record_action_audit(
             message,
-            action_type="spontaneous",
-            reason="counter/time probability passed",
+            action_type="spontaneous_react",
+            reason=str(actual_emoji),
             probability=chance,
             roll=roll,
+            final_action="react",
         )
+        self._reset_channel_counters(channel_id)
 
     # ─── Actions ────────────────────────────────────────────────────────
 
@@ -1079,9 +1106,13 @@ class DiscordLLMBot:
                 "topics_enabled": True,
                 "starters_enabled": True,
                 "spontaneous_enabled": True,
+                "spontaneous_react_enabled": True,
+                "spontaneous_reply_enabled": False,
                 "quiet_enabled": False,
                 "tracking_enabled": True,
                 "spontaneous_rate": 1.0,
+                "spontaneous_react_rate": 1.0,
+                "spontaneous_reply_rate": 0.0,
                 "mode": "normal",
             }
         return self.action_audit.get_channel_controls(channel_id)
@@ -1546,13 +1577,15 @@ class MainCommands(commands.Cog):
             "style_enabled": "style",
             "topics_enabled": "topics",
             "starters_enabled": "starters",
-            "spontaneous_enabled": "spontaneous",
+            "spontaneous_react_enabled": "spont-react",
+            "spontaneous_reply_enabled": "spont-reply",
             "quiet_enabled": "quiet",
             "tracking_enabled": "tracking",
         }
         parts = [f"{label}={'on' if controls[key] else 'off'}" for key, label in labels.items()]
         parts.insert(0, f"mode={controls.get('mode', 'normal')}")
-        parts.append(f"spont-rate={float(controls.get('spontaneous_rate', 0.0)):.2g}x")
+        parts.append(f"react-rate={float(controls.get('spontaneous_react_rate', controls.get('spontaneous_rate', 0.0))):.2g}x")
+        parts.append(f"reply-rate={float(controls.get('spontaneous_reply_rate', 0.0)):.2g}x")
         return ", ".join(parts)
 
     def _command_help(self) -> dict:
@@ -2407,13 +2440,15 @@ class ControlCommands(commands.Cog):
             "style_enabled": "style",
             "topics_enabled": "topics",
             "starters_enabled": "starters",
-            "spontaneous_enabled": "spontaneous",
+            "spontaneous_react_enabled": "spont-react",
+            "spontaneous_reply_enabled": "spont-reply",
             "quiet_enabled": "quiet",
             "tracking_enabled": "tracking",
         }
         parts = [f"{label}={'on' if controls[key] else 'off'}" for key, label in labels.items()]
         parts.insert(0, f"mode={controls.get('mode', 'normal')}")
-        parts.append(f"spont-rate={float(controls.get('spontaneous_rate', 0.0)):.2g}x")
+        parts.append(f"react-rate={float(controls.get('spontaneous_react_rate', controls.get('spontaneous_rate', 0.0))):.2g}x")
+        parts.append(f"reply-rate={float(controls.get('spontaneous_reply_rate', 0.0)):.2g}x")
         return ", ".join(parts)
 
     async def _send_target_message(self, channel_id: str, text: str) -> bool:
@@ -2454,8 +2489,10 @@ class ControlCommands(commands.Cog):
             status = []
             if controls.get("quiet_enabled"):
                 status.append("quiet")
-            if not controls.get("spontaneous_enabled", True):
-                status.append("no-spont")
+            if not controls.get("spontaneous_react_enabled", controls.get("spontaneous_enabled", True)):
+                status.append("no-spont-react")
+            if controls.get("spontaneous_reply_enabled", False):
+                status.append("spont-reply")
             if not controls.get("starters_enabled", True):
                 status.append("no-starters")
             topic_names = ", ".join(t["label"] for t in topics) or "no topics"
@@ -2674,12 +2711,23 @@ class ControlCommands(commands.Cog):
             await ctx.send("Unknown target. Use a channel ID, channel name, #channel mention/name, or bound alias.")
             return
 
-        if action in {"quiet", "learning", "style", "topics", "starters", "spontaneous", "tracking"}:
+        control_aliases = {
+            "spontaneous": "spontaneous_react",
+            "spontaneous-react": "spontaneous_react",
+            "spont-react": "spontaneous_react",
+            "spontaneous_reply": "spontaneous_reply",
+            "spontaneous-reply": "spontaneous_reply",
+            "spont-reply": "spontaneous_reply",
+        }
+        if action in {
+            "quiet", "learning", "style", "topics", "starters", "spontaneous", "spontaneous-react",
+            "spont-react", "spontaneous_reply", "spontaneous-reply", "spont-reply", "tracking"
+        }:
             value = rest.strip().lower()
             if value not in {"on", "off"}:
                 await ctx.send(f"Usage: `!control {action} <target> <on|off>`")
                 return
-            self.action_audit.set_channel_control(channel_id, action, value == "on")
+            self.action_audit.set_channel_control(channel_id, control_aliases.get(action, action), value == "on")
             controls = self.action_audit.get_channel_controls(channel_id)
             await ctx.send(f"`{target}` controls: {self._format_controls(controls)}")
             return
@@ -2694,7 +2742,7 @@ class ControlCommands(commands.Cog):
             await ctx.send(f"`{target}` controls: {self._format_controls(controls)}")
             return
 
-        if action in {"spontaneous_rate", "spont-rate", "rate"}:
+        if action in {"spontaneous_rate", "spont-rate", "rate", "spontaneous-react-rate", "spont-react-rate"}:
             value = rest.strip().lower()
             presets = {
                 "off": 0.0,
@@ -2714,7 +2762,22 @@ class ControlCommands(commands.Cog):
             if rate < 0 or rate > 2:
                 await ctx.send("Spontaneous rate must be between `0` and `2`.")
                 return
-            self.action_audit.set_spontaneous_rate(channel_id, rate)
+            self.action_audit.set_spontaneous_react_rate(channel_id, rate)
+            controls = self.action_audit.get_channel_controls(channel_id)
+            await ctx.send(f"`{target}` controls: {self._format_controls(controls)}")
+            return
+
+        if action in {"spontaneous_reply_rate", "spontaneous-reply-rate", "spont-reply-rate"}:
+            value = rest.strip().lower()
+            try:
+                rate = float(value.rstrip("x"))
+            except ValueError:
+                await ctx.send("Usage: `!control spontaneous_reply_rate <target> <0..2>`")
+                return
+            if rate < 0 or rate > 2:
+                await ctx.send("Spontaneous reply rate must be between `0` and `2`.")
+                return
+            self.action_audit.set_spontaneous_reply_rate(channel_id, rate)
             controls = self.action_audit.get_channel_controls(channel_id)
             await ctx.send(f"`{target}` controls: {self._format_controls(controls)}")
             return

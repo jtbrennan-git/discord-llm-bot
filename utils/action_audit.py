@@ -56,9 +56,13 @@ class ActionAuditStore:
                     topics_enabled INTEGER NOT NULL DEFAULT 1,
                     starters_enabled INTEGER NOT NULL DEFAULT 1,
                     spontaneous_enabled INTEGER NOT NULL DEFAULT 1,
+                    spontaneous_react_enabled INTEGER NOT NULL DEFAULT 1,
+                    spontaneous_reply_enabled INTEGER NOT NULL DEFAULT 0,
                     quiet_enabled INTEGER NOT NULL DEFAULT 0,
                     tracking_enabled INTEGER NOT NULL DEFAULT 1,
                     spontaneous_rate REAL NOT NULL DEFAULT 1.0,
+                    spontaneous_react_rate REAL NOT NULL DEFAULT 1.0,
+                    spontaneous_reply_rate REAL NOT NULL DEFAULT 0.0,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
                 """
@@ -74,6 +78,22 @@ class ActionAuditStore:
             if "spontaneous_rate" not in columns:
                 conn.execute(
                     "ALTER TABLE channel_controls ADD COLUMN spontaneous_rate REAL NOT NULL DEFAULT 1.0"
+                )
+            if "spontaneous_react_enabled" not in columns:
+                conn.execute(
+                    "ALTER TABLE channel_controls ADD COLUMN spontaneous_react_enabled INTEGER NOT NULL DEFAULT 1"
+                )
+            if "spontaneous_reply_enabled" not in columns:
+                conn.execute(
+                    "ALTER TABLE channel_controls ADD COLUMN spontaneous_reply_enabled INTEGER NOT NULL DEFAULT 0"
+                )
+            if "spontaneous_react_rate" not in columns:
+                conn.execute(
+                    "ALTER TABLE channel_controls ADD COLUMN spontaneous_react_rate REAL NOT NULL DEFAULT 1.0"
+                )
+            if "spontaneous_reply_rate" not in columns:
+                conn.execute(
+                    "ALTER TABLE channel_controls ADD COLUMN spontaneous_reply_rate REAL NOT NULL DEFAULT 0.0"
                 )
             if "mode" not in columns:
                 conn.execute(
@@ -191,9 +211,13 @@ class ActionAuditStore:
                 "topics_enabled": True,
                 "starters_enabled": True,
                 "spontaneous_enabled": True,
+                "spontaneous_react_enabled": True,
+                "spontaneous_reply_enabled": False,
                 "quiet_enabled": False,
                 "tracking_enabled": True,
-                    "spontaneous_rate": 1.0,
+                "spontaneous_rate": 1.0,
+                "spontaneous_react_rate": 1.0,
+                "spontaneous_reply_rate": 0.0,
                 "mode": "normal",
             }
         data = dict(row)
@@ -203,9 +227,13 @@ class ActionAuditStore:
             "topics_enabled": bool(data["topics_enabled"]),
             "starters_enabled": bool(data["starters_enabled"]),
             "spontaneous_enabled": bool(data["spontaneous_enabled"]),
+            "spontaneous_react_enabled": bool(data.get("spontaneous_react_enabled", data["spontaneous_enabled"])),
+            "spontaneous_reply_enabled": bool(data.get("spontaneous_reply_enabled", False)),
             "quiet_enabled": bool(data["quiet_enabled"]),
             "tracking_enabled": bool(data["tracking_enabled"]),
             "spontaneous_rate": float(data["spontaneous_rate"]),
+            "spontaneous_react_rate": float(data.get("spontaneous_react_rate", data["spontaneous_rate"])),
+            "spontaneous_reply_rate": float(data.get("spontaneous_reply_rate", 0.0)),
             "mode": data.get("mode") or "normal",
         }
 
@@ -216,6 +244,8 @@ class ActionAuditStore:
             "topics": "topics_enabled",
             "starters": "starters_enabled",
             "spontaneous": "spontaneous_enabled",
+            "spontaneous_react": "spontaneous_react_enabled",
+            "spontaneous_reply": "spontaneous_reply_enabled",
             "quiet": "quiet_enabled",
             "tracking": "tracking_enabled",
         }
@@ -238,8 +268,11 @@ class ActionAuditStore:
             conn.commit()
 
     def set_spontaneous_rate(self, channel_id: str, rate: float) -> None:
+        self.set_spontaneous_react_rate(channel_id, rate)
+
+    def set_spontaneous_react_rate(self, channel_id: str, rate: float) -> None:
         if rate < 0 or rate > 2:
-            raise ValueError("spontaneous rate must be between 0 and 2")
+            raise ValueError("spontaneous react rate must be between 0 and 2")
         with closing(sqlite3.connect(self.db_path)) as conn:
             conn.execute(
                 """
@@ -252,7 +285,29 @@ class ActionAuditStore:
             conn.execute(
                 """
                 UPDATE channel_controls
-                SET spontaneous_rate = ?, updated_at = CURRENT_TIMESTAMP
+                SET spontaneous_rate = ?, spontaneous_react_rate = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE channel_id = ?
+                """,
+                (rate, rate, channel_id),
+            )
+            conn.commit()
+
+    def set_spontaneous_reply_rate(self, channel_id: str, rate: float) -> None:
+        if rate < 0 or rate > 2:
+            raise ValueError("spontaneous reply rate must be between 0 and 2")
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                """
+                INSERT INTO channel_controls (channel_id)
+                VALUES (?)
+                ON CONFLICT(channel_id) DO NOTHING
+                """,
+                (channel_id,),
+            )
+            conn.execute(
+                """
+                UPDATE channel_controls
+                SET spontaneous_reply_rate = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE channel_id = ?
                 """,
                 (rate, channel_id),
@@ -270,6 +325,8 @@ class ActionAuditStore:
                 "topics_enabled": 1,
                 "starters_enabled": 1,
                 "spontaneous_enabled": 1,
+                "spontaneous_react_enabled": 1,
+                "spontaneous_reply_enabled": 0,
                 "quiet_enabled": 0,
                 "tracking_enabled": 1,
             },
@@ -279,6 +336,8 @@ class ActionAuditStore:
                 "topics_enabled": 1,
                 "starters_enabled": 0,
                 "spontaneous_enabled": 0,
+                "spontaneous_react_enabled": 0,
+                "spontaneous_reply_enabled": 0,
                 "quiet_enabled": 1,
                 "tracking_enabled": 1,
             },
@@ -288,6 +347,8 @@ class ActionAuditStore:
                 "topics_enabled": 1,
                 "starters_enabled": 0,
                 "spontaneous_enabled": 0,
+                "spontaneous_react_enabled": 0,
+                "spontaneous_reply_enabled": 0,
                 "quiet_enabled": 1,
                 "tracking_enabled": 1,
             },
@@ -297,6 +358,8 @@ class ActionAuditStore:
                 "topics_enabled": 0,
                 "starters_enabled": 0,
                 "spontaneous_enabled": 0,
+                "spontaneous_react_enabled": 0,
+                "spontaneous_reply_enabled": 0,
                 "quiet_enabled": 1,
                 "tracking_enabled": 0,
             },
@@ -306,6 +369,8 @@ class ActionAuditStore:
                 "topics_enabled": 0,
                 "starters_enabled": 1,
                 "spontaneous_enabled": 1,
+                "spontaneous_react_enabled": 1,
+                "spontaneous_reply_enabled": 0,
                 "quiet_enabled": 0,
                 "tracking_enabled": 1,
             },
@@ -328,6 +393,8 @@ class ActionAuditStore:
                     topics_enabled = ?,
                     starters_enabled = ?,
                     spontaneous_enabled = ?,
+                    spontaneous_react_enabled = ?,
+                    spontaneous_reply_enabled = ?,
                     quiet_enabled = ?,
                     tracking_enabled = ?,
                     updated_at = CURRENT_TIMESTAMP
@@ -340,6 +407,8 @@ class ActionAuditStore:
                     presets["topics_enabled"],
                     presets["starters_enabled"],
                     presets["spontaneous_enabled"],
+                    presets["spontaneous_react_enabled"],
+                    presets["spontaneous_reply_enabled"],
                     presets["quiet_enabled"],
                     presets["tracking_enabled"],
                     channel_id,

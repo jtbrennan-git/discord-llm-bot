@@ -6,8 +6,8 @@ A Python Discord bot that can participate in server conversations, react, learn 
 
 - Discord server message handling through `discord.py`
 - LLM-backed replies with tagged actions: reply, react, image analysis, image generation, or silent
-- Per-channel memory, style learning, topic learning, and spontaneous reply controls
-- Spontaneous participation defaults to about 1 in 30 eligible messages, with higher odds on messages already getting reactions
+- Per-channel memory, style learning, topic learning, and spontaneous controls
+- Spontaneous reacts default to about 1 in 30 eligible messages, with higher odds on messages already getting reactions; spontaneous replies are off by default
 - Per-user response and memory/privacy controls
 - Custom exact-match text triggers with local SQLite persistence and optional one-time CSV seeding
 - Profile prompt context is disabled by default for safer public multi-server deployments
