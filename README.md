@@ -84,7 +84,7 @@ User-facing:
 - `!whoami`
 - `!feedback`
 - `!highlights [count] [scan_limit]`
-- `!trigger <text> <response>`
+- `!trigger <text> [response]` or attach an image with `!trigger <text>`
 - `!forget <text>`
 - `!improve <suggestion>`
 - `!control status|mute|unmute|prompted|strict|normal|remember|forget|privacy`

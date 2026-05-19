@@ -143,6 +143,40 @@ class TestHighlights:
         assert self.commands._highlight_candidate(self._message("no reacts", [])) is None
 
 
+class TestTriggerCommandParsing:
+    def test_parse_quoted_trigger_without_response(self):
+        trigger, response = MainCommands._parse_trigger_args('"good bot"')
+
+        assert trigger == "good bot"
+        assert response == ""
+
+    def test_parse_unquoted_single_trigger_without_response(self):
+        trigger, response = MainCommands._parse_trigger_args("zean")
+
+        assert trigger == "zean"
+        assert response == ""
+
+    def test_first_image_attachment_url_uses_image_content_type(self):
+        ctx = MagicMock()
+        attachment = MagicMock()
+        attachment.content_type = "image/png"
+        attachment.filename = "upload.bin"
+        attachment.url = "https://cdn.discordapp.com/image.png"
+        ctx.message.attachments = [attachment]
+
+        assert MainCommands._first_image_attachment_url(ctx) == "https://cdn.discordapp.com/image.png"
+
+    def test_first_image_attachment_url_ignores_non_images(self):
+        ctx = MagicMock()
+        attachment = MagicMock()
+        attachment.content_type = "video/mp4"
+        attachment.filename = "clip.mp4"
+        attachment.url = "https://cdn.discordapp.com/clip.mp4"
+        ctx.message.attachments = [attachment]
+
+        assert MainCommands._first_image_attachment_url(ctx) == ""
+
+
 # ─── Probability Curve ─────────────────────────────────────────────────
 
 class TestProbabilityCurve:

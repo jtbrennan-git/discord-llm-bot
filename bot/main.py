@@ -1534,10 +1534,11 @@ class MainCommands(commands.Cog):
                 ),
             },
             "trigger": {
-                "usage": "!trigger <text> <response>",
+                "usage": "!trigger <text> [response]",
                 "summary": "Send a saved response when a future message exactly matches text, ignoring case.",
                 "details": (
                     "Examples: `!trigger \"good bot\" 👍` or `!trigger good bot thanks`. "
+                    "Attach an image and use `!trigger \"good bot\"` to save the Discord attachment URL as the response. "
                     "Triggers are stored in the local profile database for this server."
                 ),
             },
@@ -1725,13 +1726,27 @@ class MainCommands(commands.Cog):
         quoted = re.match(r"""^(['"])(.+?)\1\s+(.+)$""", text, flags=re.DOTALL)
         if quoted:
             return quoted.group(2).strip(), quoted.group(3).strip()
+        quoted_only = re.match(r"""^(['"])(.+?)\1\s*$""", text, flags=re.DOTALL)
+        if quoted_only:
+            return quoted_only.group(2).strip(), ""
         try:
             parts = shlex.split(text)
         except ValueError:
             parts = text.split()
         if len(parts) < 2:
-            return "", ""
+            return text, ""
         return " ".join(parts[:-1]).strip(), parts[-1].strip()
+
+    @staticmethod
+    def _first_image_attachment_url(ctx) -> str:
+        attachments = getattr(getattr(ctx, "message", None), "attachments", []) or []
+        for attachment in attachments:
+            content_type = (getattr(attachment, "content_type", "") or "").lower()
+            filename = (getattr(attachment, "filename", "") or "").lower()
+            url = getattr(attachment, "url", "") or ""
+            if content_type.startswith("image/") or filename.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
+                return url
+        return ""
 
     @commands.command(name="trigger")
     async def trigger(self, ctx, *, args: str = ""):
@@ -1739,8 +1754,10 @@ class MainCommands(commands.Cog):
             await ctx.send("Profile storage is not initialized.")
             return
         trigger_text, response = self._parse_trigger_args(args)
+        if not response:
+            response = self._first_image_attachment_url(ctx)
         if not trigger_text or not response:
-            await ctx.send("Usage: `!trigger <text> <response>`")
+            await ctx.send("Usage: `!trigger <text> <response>` or attach an image with `!trigger <text>`")
             return
         guild_id = str(ctx.guild.id) if ctx.guild else ""
         try:
