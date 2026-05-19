@@ -1720,7 +1720,16 @@ class MainCommands(commands.Cog):
     @staticmethod
     def _parse_trigger_args(raw: str) -> tuple:
         import shlex
-        text = (raw or "").strip()
+        text = (raw or "").translate(str.maketrans({
+            "“": '"',
+            "”": '"',
+            "„": '"',
+            "‟": '"',
+            "‘": "'",
+            "’": "'",
+            "‚": "'",
+            "‛": "'",
+        })).strip()
         if not text:
             return "", ""
         quoted = re.match(r"""^(['"])(.+?)\1\s+(.+)$""", text, flags=re.DOTALL)

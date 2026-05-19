@@ -155,6 +155,12 @@ class TestTriggerCommandParsing:
         assert trigger == "good bot"
         assert response == ""
 
+    def test_parse_curly_quoted_trigger(self):
+        trigger, response = MainCommands._parse_trigger_args("“hi there” hello")
+
+        assert trigger == "hi there"
+        assert response == "hello"
+
     def test_parse_unquoted_single_trigger_without_response(self):
         trigger, response = MainCommands._parse_trigger_args("zean")
 
