@@ -449,6 +449,17 @@ class TestResponseSending:
         assert DiscordLLMBot._legacy_image_response_url("https://example.com/a.jpg -i") is None
         assert DiscordLLMBot._legacy_image_response_url("https://i.groupme.com/a.jpg") is None
 
+    def test_legacy_video_response_url_strips_groupme_video_flag(self):
+        url = "https://v.groupme.com/15629174/2022-02-04T21:14:46Z/70601751.640x1138r.mp4 -v"
+
+        assert DiscordLLMBot._legacy_video_response_url(url) == (
+            "https://v.groupme.com/15629174/2022-02-04T21:14:46Z/70601751.640x1138r.mp4"
+        )
+
+    def test_legacy_video_response_url_ignores_non_groupme_or_plain_url(self):
+        assert DiscordLLMBot._legacy_video_response_url("https://example.com/a.mp4 -v") is None
+        assert DiscordLLMBot._legacy_video_response_url("https://v.groupme.com/a.mp4") is None
+
     @pytest.mark.asyncio
     async def test_custom_trigger_embeds_legacy_groupme_image(self):
         self.trigger.channel = self.FakeChannel()
@@ -465,6 +476,21 @@ class TestResponseSending:
         assert "file" in kwargs
         assert "embed" in kwargs
         assert kwargs["embed"].image.url.startswith("attachment://trigger-image")
+
+    @pytest.mark.asyncio
+    async def test_custom_trigger_sends_clean_legacy_groupme_video_url(self):
+        self.bot._send_tracked_response = AsyncMock()
+        message = MagicMock()
+
+        await self.bot._send_custom_trigger_response(
+            message,
+            "https://v.groupme.com/15629174/2022-02-04T21:14:46Z/70601751.640x1138r.mp4 -v",
+        )
+
+        self.bot._send_tracked_response.assert_awaited_once_with(
+            message,
+            "https://v.groupme.com/15629174/2022-02-04T21:14:46Z/70601751.640x1138r.mp4",
+        )
 
 
 class TestMemoryStore:

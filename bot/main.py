@@ -820,6 +820,18 @@ class DiscordLLMBot:
         return None
 
     @staticmethod
+    def _legacy_video_response_url(response: str) -> Optional[str]:
+        text = (response or "").strip()
+        match = re.match(r"^(https?://\S+)\s+-v\s*$", text, flags=re.IGNORECASE)
+        if not match:
+            return None
+        url = match.group(1)
+        host = urlparse(url).netloc.lower()
+        if host.endswith("groupme.com"):
+            return url
+        return None
+
+    @staticmethod
     def _filename_for_url(url: str, content_type: str = "") -> str:
         parsed = urlparse(url)
         path_name = os.path.basename(parsed.path)
@@ -839,6 +851,9 @@ class DiscordLLMBot:
 
     async def _send_custom_trigger_response(self, trigger_message: discord.Message, response: str) -> discord.Message:
         image_url = self._legacy_image_response_url(response)
+        video_url = self._legacy_video_response_url(response)
+        if video_url:
+            return await self._send_tracked_response(trigger_message, video_url)
         if not image_url:
             return await self._send_tracked_response(trigger_message, response)
 
