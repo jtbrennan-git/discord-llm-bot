@@ -386,6 +386,8 @@ class TestResponseSending:
         self.bot.config.followup_window_messages = 4
         self.bot.config.followup_window_seconds = 300
         self.bot.config.dry_run_actions = False
+        self.bot.config.dm_forward_admin_ids = []
+        self.bot.config.control_admin_ids = []
         self.bot.bot = MagicMock()
         self.bot.bot.user = MagicMock()
         self.bot.bot.user.id = 42
@@ -485,6 +487,7 @@ class TestResponseSending:
     @pytest.mark.asyncio
     async def test_dm_command_is_processed_before_guild_gate(self):
         self.bot._is_command_message = MagicMock(return_value=True)
+        self.bot._forward_private_message = AsyncMock()
         self.bot.bot.process_commands = AsyncMock()
         message = MagicMock()
         message.author.bot = False
@@ -493,7 +496,54 @@ class TestResponseSending:
 
         await self.bot.on_message(message)
 
+        self.bot._forward_private_message.assert_awaited_once_with(message)
         self.bot.bot.process_commands.assert_awaited_once_with(message)
+
+    def test_dm_forward_admin_ids_prefers_explicit_setting(self):
+        self.bot.config.dm_forward_admin_ids = ["1"]
+        self.bot.config.control_admin_ids = ["2"]
+
+        assert self.bot._dm_forward_admin_ids() == ["1"]
+
+    @pytest.mark.asyncio
+    async def test_forward_private_message_sends_to_admin(self):
+        self.bot.config.dm_forward_admin_ids = ["123"]
+        admin = MagicMock()
+        admin.send = AsyncMock()
+        self.bot.bot.fetch_user = AsyncMock(return_value=admin)
+        message = MagicMock()
+        message.content = "!trigger zean"
+        message.attachments = []
+        message.author.display_name = "Alice"
+        message.author.id = 99
+
+        await self.bot._forward_private_message(message)
+
+        self.bot.bot.fetch_user.assert_awaited_once_with(123)
+        forwarded = admin.send.await_args.args[0]
+        assert "Alice" in forwarded
+        assert "99" in forwarded
+        assert "!trigger zean" in forwarded
+
+    @pytest.mark.asyncio
+    async def test_forward_private_message_includes_attachment_urls(self):
+        self.bot.config.dm_forward_admin_ids = ["123"]
+        admin = MagicMock()
+        admin.send = AsyncMock()
+        self.bot.bot.fetch_user = AsyncMock(return_value=admin)
+        attachment = MagicMock()
+        attachment.url = "https://cdn.discordapp.com/file.png"
+        message = MagicMock()
+        message.content = ""
+        message.attachments = [attachment]
+        message.author.display_name = "Alice"
+        message.author.id = 99
+
+        await self.bot._forward_private_message(message)
+
+        forwarded = admin.send.await_args.args[0]
+        assert "Attachments:" in forwarded
+        assert "https://cdn.discordapp.com/file.png" in forwarded
 
     @pytest.mark.asyncio
     async def test_custom_trigger_sends_stored_response(self, tmp_path):

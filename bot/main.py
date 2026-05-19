@@ -206,6 +206,8 @@ class DiscordLLMBot:
     async def on_message(self, message: discord.Message):
         if message.author.bot:
             return
+        if not message.guild:
+            await self._forward_private_message(message)
         if self._is_command_message(message.content):
             await self.bot.process_commands(message)
             return
@@ -765,6 +767,49 @@ class DiscordLLMBot:
         prefixes = [self.config.command_prefix] if isinstance(self.config.command_prefix, str) else list(self.config.command_prefix)
         prefixes.append("/")
         return any(prefix and text.startswith(prefix) for prefix in prefixes)
+
+    def _dm_forward_admin_ids(self) -> List[str]:
+        ids = list(getattr(self.config, "dm_forward_admin_ids", []) or [])
+        if not ids:
+            ids = list(getattr(self.config, "control_admin_ids", []) or [])
+        if not ids:
+            env_ids = os.getenv("DEV_USER_IDS", "")
+            ids = [x.strip() for x in env_ids.split(",") if x.strip()]
+        seen = set()
+        unique = []
+        for item in ids:
+            if item and item not in seen:
+                seen.add(item)
+                unique.append(item)
+        return unique
+
+    async def _forward_private_message(self, message: discord.Message) -> None:
+        admin_ids = self._dm_forward_admin_ids()
+        if not admin_ids or not self.bot:
+            return
+        author = message.author
+        author_label = f"{self._server_display_name(author)} ({getattr(author, 'id', 'unknown')})"
+        content = (message.content or "").strip()
+        attachment_urls = [
+            getattr(attachment, "url", "")
+            for attachment in (getattr(message, "attachments", []) or [])
+            if getattr(attachment, "url", "")
+        ]
+        lines = [f"**DM to fellasbot from {author_label}**"]
+        if content:
+            lines.append(content)
+        if attachment_urls:
+            lines.append("Attachments:")
+            lines.extend(attachment_urls)
+        text = "\n".join(lines)[:1900]
+        if not content and not attachment_urls:
+            text += "\n[no text content]"
+        for admin_id in admin_ids:
+            try:
+                admin = await self.bot.fetch_user(int(admin_id))
+                await admin.send(text)
+            except Exception:
+                logger.exception("Failed to forward DM to admin_id=%s", admin_id)
 
     def _import_default_triggers(self) -> None:
         if not self.profiles or not getattr(self.config, "trigger_defaults_import_enabled", True):

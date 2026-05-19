@@ -37,6 +37,8 @@ class BotConfig:
         self.control_channel_id: str = os.getenv("CONTROL_CHANNEL_ID", "").strip()
         control_admins = os.getenv("CONTROL_ADMIN_IDS", "")
         self.control_admin_ids = [x.strip() for x in control_admins.split(",") if x.strip()]
+        dm_admins = os.getenv("DM_FORWARD_ADMIN_IDS", "")
+        self.dm_forward_admin_ids = [x.strip() for x in dm_admins.split(",") if x.strip()]
         self.target_guild_id: str = os.getenv("TARGET_GUILD_ID", "").strip()
 
         # LLM settings
